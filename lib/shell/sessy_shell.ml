@@ -1,5 +1,7 @@
 open Sessy_domain
 
+module Session_id_set = Set.Make (Session_id)
+
 let read_file = Fs.read_file
 let list_dir = Fs.list_dir
 let file_exists = Fs.file_exists
@@ -78,6 +80,16 @@ let lookup_source config tool =
   config.sources
   |> List.find_opt (fun source -> Tool.equal source.tool tool)
 
+let lookup_profile config tool profile_name =
+  config.profiles
+  |> List.find_opt (fun profile ->
+         Tool.equal profile.base_tool tool
+         && String.equal profile.name profile_name)
+
+let tool_profiles config tool =
+  config.profiles
+  |> List.filter (fun profile -> Tool.equal profile.base_tool tool)
+
 let string_contains text pattern =
   let text_length = String.length text in
   let pattern_length = String.length pattern in
@@ -93,6 +105,51 @@ let string_contains text pattern =
   in
 
   loop 0
+
+let profile_placeholder = "{{profile}}"
+
+let launch_requires_profile launch =
+  let head, tail = launch.argv_template in
+
+  head :: tail
+  |> List.exists (fun value -> string_contains value profile_placeholder)
+
+let profile_names profiles =
+  profiles
+  |> List.map (fun profile -> profile.name)
+  |> String.concat ", "
+
+let missing_profile_message tool =
+  tool |> Tool.to_string
+  |> Printf.sprintf "launch template for %s requires a profile, but none is configured"
+
+let unknown_profile_message tool profile_name =
+  Printf.sprintf "unknown profile for %s: %s"
+    (tool |> Tool.to_string)
+    profile_name
+
+let ambiguous_profile_message tool profiles =
+  Printf.sprintf
+    "launch template for %s requires a selected profile, but multiple are configured: %s"
+    (tool |> Tool.to_string)
+    (profiles |> profile_names)
+
+let resolve_launch_profile ~config ~tool ~launch ~active_profile =
+  let requires_profile = launch_requires_profile launch in
+
+  match active_profile with
+  | Some profile_name -> (
+      match lookup_profile config tool profile_name with
+      | Some profile -> Ok (Some profile)
+      | None -> Error (unknown_profile_message tool profile_name))
+  | None -> (
+      match tool_profiles config tool with
+      | [] when requires_profile -> Error (missing_profile_message tool)
+      | [] -> Ok None
+      | [ profile ] -> Ok (Some profile)
+      | profiles when requires_profile ->
+          Error (ambiguous_profile_message tool profiles)
+      | _ -> Ok None)
 
 let path_is_directory path =
   try Sys.is_directory path with Sys_error _ -> false
@@ -182,19 +239,25 @@ let apply_launch_mode launch_mode launch =
   | Sessy_ui.Default -> launch
   | Sessy_ui.Dry_run -> { launch with exec_mode = Print }
 
-let expand_launch_cmd ~config ~launch_mode (session : session) =
+let expand_launch_cmd ~config ~active_profile ~launch_mode (session : session) =
   match lookup_launch config session.tool with
   | Error _ as error -> error
-  | Ok launch ->
-      Sessy_core.expand_template session None launch
-      |> Result.map (apply_launch_mode launch_mode)
-      |> Result.map_error config_error_message
+  | Ok launch -> (
+      match
+        resolve_launch_profile ~config ~tool:session.tool ~launch ~active_profile
+      with
+      | Error _ as error -> error
+      | Ok profile ->
+          Sessy_core.expand_template session profile launch
+          |> Result.map (apply_launch_mode launch_mode)
+          |> Result.map_error config_error_message)
 
-let prepare_launch_cmd ~config ~launch_mode ~cwd (session : session) =
+let prepare_launch_cmd ~config ~active_profile ~launch_mode ~cwd
+    (session : session) =
   let hydrated = hydrate_session_detail ~config session in
   let launched = launch_session ~cwd hydrated in
 
-  expand_launch_cmd ~config ~launch_mode launched
+  expand_launch_cmd ~config ~active_profile ~launch_mode launched
 
 let repo_scope repo_root =
   repo_root
@@ -203,35 +266,71 @@ let repo_scope repo_root =
 
 let empty_query scope = { text = ""; scope; tool_filter = None; mode = Meta }
 
-let select_last_session ~config ~index ~cwd ~repo_root ~now =
-  let hydrated_index =
-    index
-    |> Sessy_index.all_sessions
-    |> List.map (hydrate_session_detail ~config)
-    |> Sessy_index.build
-  in
-  let primary_scope = repo_scope repo_root in
-  let primary_results =
-    Sessy_index.search hydrated_index (empty_query primary_scope) ~now ~cwd
-      ~repo_root
-    |> List.map (fun ranked -> ranked.session)
+let take count values =
+  let rec loop remaining acc pending =
+    match remaining, pending with
+    | 0, _ | _, [] -> acc |> List.rev
+    | _, head :: tail -> loop (remaining - 1) (head :: acc) tail
   in
 
-  match primary_results with
-  | first :: _ -> Some first
-  | [] ->
-      Sessy_index.search hydrated_index (empty_query All) ~now ~cwd ~repo_root
-      |> List.map (fun ranked -> ranked.session)
-      |> function
-      | first :: _ -> Some first
-      | [] -> None
+  loop count [] values
+
+let first_or_none = function first :: _ -> Some first | [] -> None
+
+let ranked_sessions index query ~now ~cwd ~repo_root : session list =
+  Sessy_index.search index query ~now ~cwd ~repo_root
+  |> List.map (fun (ranked : ranked) -> ranked.session)
+
+let dedupe_sessions sessions =
+  sessions
+  |> List.fold_left
+       (fun (seen, acc) session ->
+         if Session_id_set.mem session.id seen then (seen, acc)
+         else (Session_id_set.add session.id seen, session :: acc))
+       (Session_id_set.empty, [])
+  |> snd
+  |> List.rev
+
+let last_detail_probe_limit = 16
+
+let select_last_session ~config ~index ~cwd ~repo_root ~now =
+  let primary_scope = repo_scope repo_root in
+  let primary_candidate =
+    ranked_sessions index (empty_query primary_scope) ~now ~cwd ~repo_root
+    |> first_or_none
+  in
+  let fallback_ranked : session list =
+    ranked_sessions index (empty_query All) ~now ~cwd ~repo_root
+  in
+  let fallback_candidate = fallback_ranked |> first_or_none in
+  let hydrated_unknown_candidates : session list =
+    fallback_ranked
+    |> List.filter (fun (session : session) -> String.equal session.cwd "")
+    |> take last_detail_probe_limit
+    |> List.map (hydrate_session_detail ~config)
+  in
+  let candidate_index =
+    [ primary_candidate; fallback_candidate ]
+    |> List.filter_map Fun.id
+    |> fun sessions -> sessions @ hydrated_unknown_candidates
+    |> dedupe_sessions
+    |> Sessy_index.build
+  in
+
+  ranked_sessions candidate_index (empty_query primary_scope) ~now ~cwd ~repo_root
+  |> first_or_none
+  |> function
+  | Some session -> Some session
+  | None ->
+      ranked_sessions candidate_index (empty_query All) ~now ~cwd ~repo_root
+      |> first_or_none
 
 let resolve_index_session ~index (session_id : Session_id.t) =
   Sessy_index.find_by_id index session_id |> function
   | Some session -> Ok session
   | None -> Error (session_not_found_message session_id)
 
-let resolve_preview ~config ~index ~session_id ~cwd =
+let resolve_preview ~config ~index ~session_id ~cwd ~active_profile =
   session_id
   |> resolve_index_session ~index
   |> Result.map (fun session ->
@@ -239,13 +338,14 @@ let resolve_preview ~config ~index ~session_id ~cwd =
          let launch =
            detail_session
            |> launch_session ~cwd
-           |> expand_launch_cmd ~config ~launch_mode:Sessy_ui.Default
+           |> expand_launch_cmd ~config ~active_profile
+                ~launch_mode:Sessy_ui.Default
          in
 
          ({ session = detail_session; launch } : Sessy_ui.preview))
 
-let resolve_launch_cmd ~config ~index ~(request : launch_request) ~launch_mode
-    ~cwd ~repo_root ~now =
+let resolve_launch_cmd ~config ~index ~(request : launch_request) ~active_profile
+    ~launch_mode ~cwd ~repo_root ~now =
   let selected_session =
     match request with
     | Last_request -> (
@@ -256,7 +356,8 @@ let resolve_launch_cmd ~config ~index ~(request : launch_request) ~launch_mode
   in
 
   match selected_session with
-  | Ok session -> prepare_launch_cmd ~config ~launch_mode ~cwd session
+  | Ok session ->
+      prepare_launch_cmd ~config ~active_profile ~launch_mode ~cwd session
   | Error _ as error -> error
 
 type doctor_status = Ok_status | Warn_status
@@ -335,7 +436,7 @@ let wait_for_pid pid =
 
 let run_command_with_input program arguments input =
   let argv = Array.of_list (program :: arguments) in
-  let read_fd, write_fd = Unix.pipe () in
+  let read_fd, write_fd = Unix.pipe ~cloexec:true () in
 
   try
     let pid =
@@ -499,8 +600,8 @@ let execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
       0
   | Sessy_ui.Resolve_last launch_mode -> (
       match
-        resolve_launch_cmd ~config ~index ~request:Last_request ~launch_mode ~cwd
-          ~repo_root ~now
+        resolve_launch_cmd ~config ~index ~request:Last_request
+          ~active_profile:None ~launch_mode ~cwd ~repo_root ~now
       with
       | Ok command -> command |> execute_launch
       | Error message ->
@@ -510,14 +611,16 @@ let execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
       match
         resolve_launch_cmd ~config ~index
           ~request:(Session_request session_id)
-          ~launch_mode ~cwd ~repo_root ~now
+          ~active_profile:None ~launch_mode ~cwd ~repo_root ~now
       with
       | Ok command -> command |> execute_launch
       | Error message ->
           prerr_endline message;
           1)
   | Sessy_ui.Resolve_preview session_id -> (
-      match resolve_preview ~config ~index ~session_id ~cwd with
+      match
+        resolve_preview ~config ~index ~session_id ~cwd ~active_profile:None
+      with
       | Ok preview ->
           preview |> Sessy_ui.format_preview ~now |> print_output;
           0

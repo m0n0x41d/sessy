@@ -118,6 +118,26 @@ let with_temp_file contents run =
 
   Fun.protect ~finally:(fun () -> Sys.remove path) (fun () -> run path)
 
+let rec remove_path path =
+  if Sys.file_exists path then
+    if Sys.is_directory path then (
+      path
+      |> Sys.readdir
+      |> Array.iter (fun entry ->
+             entry
+             |> Filename.concat path
+             |> remove_path);
+      Unix.rmdir path)
+    else Sys.remove path
+
+let with_temp_dir run =
+  let path = Filename.temp_file "sessy-test-" "" in
+
+  Sys.remove path;
+  Unix.mkdir path 0o700;
+
+  Fun.protect ~finally:(fun () -> remove_path path) (fun () -> run path)
+
 let with_env_value name value run =
   let original = Sys.getenv_opt name in
 
@@ -143,6 +163,24 @@ let contains_substring ~needle haystack =
   in
 
   loop 0
+
+let wait_for_pid_with_timeout pid timeout_seconds =
+  let deadline = Unix.gettimeofday () +. timeout_seconds in
+
+  let rec loop () =
+    match Unix.waitpid [ Unix.WNOHANG ] pid with
+    | 0, _ when Unix.gettimeofday () < deadline ->
+        let _ready, _write, _except = Unix.select [] [] [] 0.01 in
+        loop ()
+    | 0, _ ->
+        Unix.kill pid Sys.sigkill;
+        let _pid, status = Unix.waitpid [] pid in
+
+        Error status
+    | _, status -> Ok status
+  in
+
+  loop ()
 
 let lookup_launch config tool =
   config.launches
@@ -1178,6 +1216,7 @@ let test_shell_resolve_launch_hydrates_codex_detail () =
   let command =
     Sessy_shell.resolve_launch_cmd ~config ~index
       ~request:(Sessy_shell.Session_request session_id)
+      ~active_profile:None
       ~launch_mode:Sessy_ui.Dry_run ~cwd:"/tmp/fallback"
       ~repo_root:(Some "/Users/example/Repos/projects/sessy")
       ~now:1_900_000_000.
@@ -1196,6 +1235,48 @@ let test_shell_resolve_launch_hydrates_codex_detail () =
   check bool "dry-run forces print mode" true
     (match command.exec_mode with Print -> true | Spawn | Exec -> false)
 
+let test_shell_resolve_launch_uses_single_profile_for_cli () =
+  let session = make_session ~tool:Codex ~cwd:"/tmp/project" "profile-cli-1" in
+  let config =
+    {
+      Sessy_core.default_config with
+      sources = [];
+      launches =
+        [
+          ( Codex,
+            {
+              argv_template = ("codex", [ "resume"; "{{profile}}"; "{{id}}" ]);
+              cwd_policy = `Session;
+              default_exec_mode = Spawn;
+            } );
+        ];
+      profiles =
+        [
+          {
+            name = "fast";
+            base_tool = Codex;
+            argv_append = [ "--profile"; "fast" ];
+            exec_mode_override = None;
+          };
+        ];
+    }
+  in
+  let index = Sessy_index.build [ session ] in
+  let command =
+    Sessy_shell.resolve_launch_cmd ~config ~index
+      ~request:(Sessy_shell.Session_request session.id)
+      ~active_profile:None
+      ~launch_mode:Sessy_ui.Dry_run ~cwd:"/tmp/fallback" ~repo_root:None
+      ~now:1_900_000_000.
+    |> require_ok "expected CLI launch to resolve a single configured profile"
+  in
+
+  check
+    (pair string (list string))
+    "CLI launch expands profile placeholder and additive args"
+    ("codex", [ "resume"; "fast"; "profile-cli-1"; "--profile"; "fast" ])
+    command.argv
+
 let test_shell_resolve_preview_hydrates_detail () =
   let config = fixture_runtime_config () in
   let sessions, _warnings = Sessy_shell.load_sessions config in
@@ -1203,6 +1284,7 @@ let test_shell_resolve_preview_hydrates_detail () =
   let session_id = require_session_id "01999f1e-084e-77d3-9b2d-5a2692a779d5" in
   let preview =
     Sessy_shell.resolve_preview ~config ~index ~session_id ~cwd:"/tmp/fallback"
+      ~active_profile:None
     |> require_ok "expected preview to resolve"
   in
 
@@ -1229,6 +1311,7 @@ let test_shell_resolve_last_prefers_repo_ranking () =
   let command =
     Sessy_shell.resolve_launch_cmd ~config ~index
       ~request:Sessy_shell.Last_request
+      ~active_profile:None
       ~launch_mode:Sessy_ui.Dry_run ~cwd:"/repo/app"
       ~repo_root:(Some "/repo") ~now:1_000.
     |> require_ok "expected last command to resolve"
@@ -1239,6 +1322,49 @@ let test_shell_resolve_last_prefers_repo_ranking () =
     "last uses repo-aware ranking instead of newest global session"
     ("claude", [ "--resume"; "repo-1" ])
     command.argv
+
+let test_shell_copy_to_clipboard_delivers_eof () =
+  let original_path = Sys.getenv_opt "PATH" |> Option.value ~default:"" in
+
+  with_temp_dir (fun directory ->
+      let script_path = Filename.concat directory "pbcopy" in
+      let output_path = Filename.concat directory "clipboard.txt" in
+      let path_value = String.concat ":" [ directory; original_path ] in
+
+      Out_channel.with_open_bin script_path (fun channel ->
+          output_string channel "#!/bin/sh\ncat > \"$SESSY_CLIPBOARD_OUT\"\n");
+      Unix.chmod script_path 0o755;
+
+      with_env_value "PATH" path_value (fun () ->
+          with_env_value "SESSY_CLIPBOARD_OUT" output_path (fun () ->
+              match Unix.fork () with
+              | 0 ->
+                  let exit_code =
+                    match Sessy_shell.copy_to_clipboard "session-123\n" with
+                    | Ok _ -> 0
+                    | Error _ -> 1
+                  in
+
+                  Stdlib.exit exit_code
+              | pid -> (
+                  match wait_for_pid_with_timeout pid 1.0 with
+                  | Ok (Unix.WEXITED 0) ->
+                      check string "clipboard helper receives complete stdin"
+                        "session-123\n"
+                        (In_channel.with_open_bin output_path
+                           In_channel.input_all)
+                  | Ok status ->
+                      fail
+                        (Printf.sprintf "clipboard helper exited unexpectedly: %s"
+                           (match status with
+                           | Unix.WEXITED code ->
+                               Printf.sprintf "exit %d" code
+                           | Unix.WSIGNALED signal ->
+                               Printf.sprintf "signal %d" signal
+                           | Unix.WSTOPPED signal ->
+                               Printf.sprintf "stopped %d" signal))
+                  | Error _ ->
+                      fail "clipboard helper timed out waiting for EOF"))))
 
 let test_doctor_report () =
   let config = fixture_runtime_config () in
@@ -1397,10 +1523,14 @@ let () =
             test_shell_load_sessions_is_tolerant;
           test_case "resolve launch hydrates Codex detail" `Quick
             test_shell_resolve_launch_hydrates_codex_detail;
+          test_case "CLI launch uses a single configured profile" `Quick
+            test_shell_resolve_launch_uses_single_profile_for_cli;
           test_case "resolve preview hydrates detail" `Quick
             test_shell_resolve_preview_hydrates_detail;
           test_case "resolve last prefers repo ranking" `Quick
             test_shell_resolve_last_prefers_repo_ranking;
+          test_case "clipboard helper closes stdin on exec" `Quick
+            test_shell_copy_to_clipboard_delivers_eof;
           test_case "doctor report" `Quick test_doctor_report;
           test_case "bare sessy requires tty in tests" `Quick
             test_shell_run_once_open_picker_requires_tty;
