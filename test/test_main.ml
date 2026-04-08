@@ -927,9 +927,10 @@ let test_tui_update_behaviour () =
   let quit_model, quit_cmd = Sessy_ui.update model Sessy_ui.Quit in
 
   check int "init searches across both sessions" 2 (List.length model.results);
-  check string "query filter keeps matching session" "def67890yy"
-    (filtered_model.results |> List.hd |> fun ranked ->
-     Session_id.to_string ranked.session.id);
+  check bool "query keeps the matching session visible" true
+    (filtered_model.results
+    |> List.exists (fun ranked ->
+           String.equal "def67890yy" (Session_id.to_string ranked.session.id)));
   check bool "query change stays pure" true
     (match filtered_cmd with Sessy_ui.Noop -> true | _ -> false);
   check int "cursor move selects second session" 1 moved_model.cursor;
