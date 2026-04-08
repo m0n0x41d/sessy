@@ -14,14 +14,80 @@ type preview = {
   launch : (Sessy_domain.launch_cmd, string) result;
 }
 
+type terminal = {
+  width : int;
+  height : int;
+}
+
+type model = {
+  index : Sessy_index.t;
+  config : Sessy_domain.config;
+  query : Sessy_domain.query;
+  results : Sessy_domain.ranked list;
+  cursor : int;
+  preview_visible : bool;
+  help_visible : bool;
+  active_profile : string option;
+  cwd : string;
+  repo_root : string option;
+  now : float;
+  terminal : terminal;
+  notice : string option;
+}
+
+type reload_snapshot = {
+  index : Sessy_index.t;
+  config : Sessy_domain.config;
+  now : float;
+  warning : string option;
+}
+
 type cmd =
+  | Launch of Sessy_domain.launch_cmd
+  | Copy_to_clipboard of string
+  | Open_directory of string
+  | Reload_index
+  | Exit
+  | Noop
   | Print_notice of string
   | Print_sessions of Sessy_domain.session list * output_format
+  | Print_preview of preview
   | Resolve_last of launch_mode
   | Resolve_resume of Sessy_domain.Session_id.t * launch_mode
   | Resolve_preview of Sessy_domain.Session_id.t
   | Run_doctor
   | Print_error of string
+
+type msg =
+  | Query_changed of string
+  | Cursor_moved of int
+  | Scope_toggled
+  | Tool_filter_toggled
+  | Search_mode_toggled
+  | Preview_toggled
+  | Help_toggled
+  | Session_selected
+  | Copy_requested
+  | Open_directory_requested
+  | Reload_requested
+  | Reload_finished of reload_snapshot
+  | Notice_set of string option
+  | Window_resized of terminal
+  | Quit
+
+val init :
+  Sessy_index.t ->
+  Sessy_domain.config ->
+  cwd:string ->
+  repo_root:string option ->
+  now:float ->
+  terminal:terminal ->
+  notice:string option ->
+  model
+
+val update : model -> msg -> model * cmd
+val view : model -> string
+val selected_preview : model -> preview option
 
 val parse_cli : string list -> (cli_action, string) result
 

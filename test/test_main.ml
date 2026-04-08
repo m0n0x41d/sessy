@@ -867,7 +867,7 @@ let test_cli_parse_dispatch_and_format () =
   check bool "open picker stays a non-error placeholder" true
     (match picker_commands with
     | [ Sessy_ui.Print_notice message ] ->
-        String.equal "interactive mode is not implemented yet" message
+        String.equal "interactive mode requires the shell runtime" message
     | _ -> false);
   check string "preview formatting shows launch preview"
     "id: abc12345zz\n\
@@ -889,6 +889,94 @@ let test_cli_parse_dispatch_and_format () =
         | Some (`String value) -> value
         | Some _ | None -> fail "expected id field")
     | _ -> fail "expected session json object")
+
+let make_tui_model () =
+  let config = { Sessy_core.default_config with default_scope = All } in
+  let current =
+    make_session ~updated_at:60. ~title:"Fix ranking" ~cwd:"/repo/worktree"
+      "abc12345zz"
+  in
+  let other =
+    make_session ~tool:Codex ~updated_at:90. ~title:"Other repo" ~cwd:"/other"
+      "def67890yy"
+  in
+  let index = Sessy_index.build [ other; current ] in
+  let model =
+    Sessy_ui.init index config ~cwd:"/repo/worktree" ~repo_root:(Some "/repo")
+      ~now:120. ~terminal:{ Sessy_ui.width = 120; height = 18 } ~notice:None
+  in
+
+  (model, current, other)
+
+let test_tui_update_behaviour () =
+  let model, current, other = make_tui_model () in
+  let filtered_model, filtered_cmd =
+    Sessy_ui.update model (Sessy_ui.Query_changed "Other")
+  in
+  let moved_model, moved_cmd = Sessy_ui.update model (Sessy_ui.Cursor_moved 1) in
+  let preview_model, preview_cmd =
+    Sessy_ui.update model Sessy_ui.Preview_toggled
+  in
+  let copy_model, copy_cmd = Sessy_ui.update moved_model Sessy_ui.Copy_requested in
+  let reload_model, reload_cmd =
+    Sessy_ui.update model Sessy_ui.Reload_requested
+  in
+  let launch_model, launch_cmd =
+    Sessy_ui.update model Sessy_ui.Session_selected
+  in
+  let quit_model, quit_cmd = Sessy_ui.update model Sessy_ui.Quit in
+
+  check int "init searches across both sessions" 2 (List.length model.results);
+  check string "query filter keeps matching session" "def67890yy"
+    (filtered_model.results |> List.hd |> fun ranked ->
+     Session_id.to_string ranked.session.id);
+  check bool "query change stays pure" true
+    (match filtered_cmd with Sessy_ui.Noop -> true | _ -> false);
+  check int "cursor move selects second session" 1 moved_model.cursor;
+  check bool "cursor move stays pure" true
+    (match moved_cmd with Sessy_ui.Noop -> true | _ -> false);
+  check bool "preview toggles off" false preview_model.preview_visible;
+  check bool "preview toggle stays pure" true
+    (match preview_cmd with Sessy_ui.Noop -> true | _ -> false);
+  check bool "copy request clears notices" true (Option.is_none copy_model.notice);
+  check bool "copy request emits selected id" true
+    (match copy_cmd with
+    | Sessy_ui.Copy_to_clipboard session_id ->
+        String.equal session_id (Session_id.to_string other.id)
+    | _ -> false);
+  check string "reload request sets status text" "reloading sessions..."
+    (reload_model.notice |> require_some "expected reload notice");
+  check bool "reload request emits command" true
+    (match reload_cmd with Sessy_ui.Reload_index -> true | _ -> false);
+  check bool "session selection emits launch" true
+    (match launch_cmd with
+    | Sessy_ui.Launch command ->
+        command.argv = ("claude", [ "--resume"; "abc12345zz" ])
+        && String.equal command.cwd current.cwd
+    | _ -> false);
+  check bool "launch clears notice" true (Option.is_none launch_model.notice);
+  check bool "quit exits" true
+    (match quit_cmd with Sessy_ui.Exit -> true | _ -> false);
+  check bool "quit clears notice" true (Option.is_none quit_model.notice)
+
+let test_tui_view_rendering () =
+  let model, _, _ = make_tui_model () in
+  let wide = Sessy_ui.view model in
+  let narrow_model, _ =
+    Sessy_ui.update model
+      (Sessy_ui.Window_resized { Sessy_ui.width = 80; height = 18 })
+  in
+  let narrow = Sessy_ui.view narrow_model in
+  let help_model, _ = Sessy_ui.update model Sessy_ui.Help_toggled in
+  let help_view = Sessy_ui.view help_model in
+
+  check_contains "wide view shows preview title" wide "Preview";
+  check_contains "wide view shows launch preview" wide
+    "launch: claude --resume abc12345zz";
+  check_contains "wide view shows query placeholder" wide "<type to filter>";
+  check bool "narrow view hides preview pane" false
+    (contains_substring ~needle:"launch: claude --resume abc12345zz" narrow);
+  check_contains "help toggle shows shortcuts overlay" help_view "Shortcuts:"
 
 let test_shell_fs_and_config_loader () =
   let raw =
@@ -1007,6 +1095,51 @@ argv_append = "skip"
             |> List.exists
                  (contains_substring
                     ~needle:"profiles.claude.unsafe.argv_append"))))
+
+let test_shell_profile_override_stays_scoped_to_section_tool () =
+  let base_config =
+    {|
+[profiles.codex.fast]
+argv_append = ["--profile", "fast"]
+|}
+  in
+  let invalid_override =
+    {|
+[profiles.claude.fast]
+argv_append = "skip"
+|}
+  in
+
+  with_temp_file base_config (fun base_path ->
+      with_temp_file invalid_override (fun override_path ->
+          let config, warnings =
+            Sessy_shell.load_config_from_paths [ base_path; override_path ]
+          in
+          let codex_fast =
+            config.profiles
+            |> List.find_opt (fun profile ->
+                   Tool.equal profile.base_tool Codex
+                   && String.equal profile.name "fast")
+            |> require_some "expected codex fast profile"
+          in
+          let claude_fast =
+            config.profiles
+            |> List.find_opt (fun profile ->
+                   Tool.equal profile.base_tool Claude
+                   && String.equal profile.name "fast")
+            |> require_some "expected claude fast profile"
+          in
+
+          check (list string) "codex profile stays untouched"
+            [ "--profile"; "fast" ]
+            codex_fast.argv_append;
+          check (list string) "claude profile falls back to empty args" []
+            claude_fast.argv_append;
+          check bool "section-scoped warning recorded" true
+            (warnings
+            |> List.exists
+                 (contains_substring
+                    ~needle:"profiles.claude.fast.argv_append"))))
 
 let test_shell_load_sessions_is_tolerant () =
   let config =
@@ -1127,12 +1260,12 @@ let test_doctor_report () =
   check_contains "doctor includes tool checks" report "tool claude:";
   check_contains "doctor includes both tool checks" report "tool codex:"
 
-let test_shell_run_once_open_picker_is_success () =
+let test_shell_run_once_open_picker_requires_tty () =
   let exit_status =
     Sessy_shell.run_once ~argv:[] ~config_paths:[] ~cwd:"/tmp" ~now:0.
   in
 
-  check int "bare sessy exits cleanly" 0 exit_status
+  check int "bare sessy reports missing tty in tests" 1 exit_status
 
 let test_shell_exec_replace_reports_errors () =
   let command =
@@ -1244,6 +1377,8 @@ let () =
         [
           test_case "cli parse dispatch and format" `Quick
             test_cli_parse_dispatch_and_format;
+          test_case "tui update behaviour" `Quick test_tui_update_behaviour;
+          test_case "tui view rendering" `Quick test_tui_view_rendering;
         ] );
       ( "shell",
         [
@@ -1255,6 +1390,8 @@ let () =
             test_shell_config_loader_invalid_types_fall_back;
           test_case "invalid profile override keeps prior values" `Quick
             test_shell_profile_override_preserves_prior_values_on_invalid_input;
+          test_case "profile fallback stays section-scoped" `Quick
+            test_shell_profile_override_stays_scoped_to_section_tool;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
           test_case "resolve launch hydrates Codex detail" `Quick
@@ -1264,8 +1401,8 @@ let () =
           test_case "resolve last prefers repo ranking" `Quick
             test_shell_resolve_last_prefers_repo_ranking;
           test_case "doctor report" `Quick test_doctor_report;
-          test_case "bare sessy exits cleanly" `Quick
-            test_shell_run_once_open_picker_is_success;
+          test_case "bare sessy requires tty in tests" `Quick
+            test_shell_run_once_open_picker_requires_tty;
           test_case "exec_replace reports errors" `Quick
             test_shell_exec_replace_reports_errors;
         ] );

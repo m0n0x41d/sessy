@@ -162,20 +162,19 @@ let merge_session base detail =
     updated_at = Float.max base.updated_at detail.updated_at;
   }
 
-let hydrate_session_detail ~config session =
+let hydrate_session_detail ~config (session : session) =
   match lookup_source config session.tool with
   | None -> session
   | Some source ->
       detail_roots source
       |> List.find_map (fun root ->
-             root
-             |> detail_candidate_paths session.id
+             detail_candidate_paths root session.id
              |> List.find_map (read_detail_session source session.id))
       |> function
       | Some detail -> merge_session session detail
       | None -> session
 
-let launch_session ~cwd session =
+let launch_session ~cwd (session : session) : session =
   if String.equal session.cwd "" then { session with cwd } else session
 
 let apply_launch_mode launch_mode launch =
@@ -183,16 +182,19 @@ let apply_launch_mode launch_mode launch =
   | Sessy_ui.Default -> launch
   | Sessy_ui.Dry_run -> { launch with exec_mode = Print }
 
-let prepare_launch_cmd ~config ~launch_mode ~cwd session =
-  let session = session |> hydrate_session_detail ~config |> launch_session ~cwd in
-
+let expand_launch_cmd ~config ~launch_mode (session : session) =
   match lookup_launch config session.tool with
   | Error _ as error -> error
   | Ok launch ->
-      launch
-      |> Sessy_core.expand_template session None
+      Sessy_core.expand_template session None launch
       |> Result.map (apply_launch_mode launch_mode)
       |> Result.map_error config_error_message
+
+let prepare_launch_cmd ~config ~launch_mode ~cwd (session : session) =
+  let hydrated = hydrate_session_detail ~config session in
+  let launched = launch_session ~cwd hydrated in
+
+  expand_launch_cmd ~config ~launch_mode launched
 
 let repo_scope repo_root =
   repo_root
@@ -210,25 +212,22 @@ let select_last_session ~config ~index ~cwd ~repo_root ~now =
   in
   let primary_scope = repo_scope repo_root in
   let primary_results =
-    hydrated_index
-    |> Sessy_index.search (empty_query primary_scope) ~now ~cwd ~repo_root
+    Sessy_index.search hydrated_index (empty_query primary_scope) ~now ~cwd
+      ~repo_root
     |> List.map (fun ranked -> ranked.session)
   in
 
   match primary_results with
   | first :: _ -> Some first
   | [] ->
-      hydrated_index
-      |> Sessy_index.search (empty_query All) ~now ~cwd ~repo_root
+      Sessy_index.search hydrated_index (empty_query All) ~now ~cwd ~repo_root
       |> List.map (fun ranked -> ranked.session)
       |> function
       | first :: _ -> Some first
       | [] -> None
 
-let resolve_index_session ~index session_id =
-  index
-  |> Sessy_index.find_by_id session_id
-  |> function
+let resolve_index_session ~index (session_id : Session_id.t) =
+  Sessy_index.find_by_id index session_id |> function
   | Some session -> Ok session
   | None -> Error (session_not_found_message session_id)
 
@@ -240,24 +239,25 @@ let resolve_preview ~config ~index ~session_id ~cwd =
          let launch =
            detail_session
            |> launch_session ~cwd
-           |> prepare_launch_cmd ~config ~launch_mode:Sessy_ui.Default ~cwd
+           |> expand_launch_cmd ~config ~launch_mode:Sessy_ui.Default
          in
 
-         { Sessy_ui.session = detail_session; launch })
+         ({ session = detail_session; launch } : Sessy_ui.preview))
 
-let resolve_launch_cmd ~config ~index ~request ~launch_mode ~cwd ~repo_root ~now =
+let resolve_launch_cmd ~config ~index ~(request : launch_request) ~launch_mode
+    ~cwd ~repo_root ~now =
   let selected_session =
     match request with
-    | Last_request ->
-        select_last_session ~config ~index ~cwd ~repo_root ~now
-        |> function
+    | Last_request -> (
+        match select_last_session ~config ~index ~cwd ~repo_root ~now with
         | Some session -> Ok session
-        | None -> Error "no sessions available"
-    | Session_request session_id -> session_id |> resolve_index_session ~index
+        | None -> Error "no sessions available")
+    | Session_request session_id -> resolve_index_session ~index session_id
   in
 
-  selected_session
-  |> Result.bind (prepare_launch_cmd ~config ~launch_mode ~cwd)
+  match selected_session with
+  | Ok session -> prepare_launch_cmd ~config ~launch_mode ~cwd session
+  | Error _ as error -> error
 
 type doctor_status = Ok_status | Warn_status
 type doctor_check = { status : doctor_status; label : string; detail : string }
@@ -294,6 +294,108 @@ let find_executable name =
         Unix.access candidate [ Unix.X_OK ];
         Some candidate
       with Unix.Unix_error _ -> None)
+
+type loaded_state = {
+  config : config;
+  config_warnings : string list;
+  session_warnings : string list;
+  index : Sessy_index.t;
+}
+
+let combined_warnings state =
+  state.config_warnings @ state.session_warnings
+
+let warning_summary warnings =
+  match warnings with
+  | [] -> None
+  | [ warning ] -> Some warning
+  | first :: _ ->
+      Some
+        (Printf.sprintf "%d warnings; first: %s" (List.length warnings) first)
+
+let load_runtime_state ~config_paths =
+  let config, config_warnings = load_config_from_paths config_paths in
+  let sessions, session_warnings = load_sessions config in
+  let index = sessions |> Sessy_index.build in
+
+  { config; config_warnings; session_warnings; index }
+
+let describe_unix_error error function_name argument =
+  Printf.sprintf "%s(%s): %s" function_name argument (Unix.error_message error)
+
+let wait_for_pid pid =
+  match Unix.waitpid [] pid with
+  | _, Unix.WEXITED 0 -> Ok ()
+  | _, Unix.WEXITED code ->
+      Error (Printf.sprintf "process exited with status %d" code)
+  | _, Unix.WSIGNALED signal ->
+      Error (Printf.sprintf "process killed by signal %d" signal)
+  | _, Unix.WSTOPPED signal ->
+      Error (Printf.sprintf "process stopped by signal %d" signal)
+
+let run_command_with_input program arguments input =
+  let argv = Array.of_list (program :: arguments) in
+  let read_fd, write_fd = Unix.pipe () in
+
+  try
+    let pid =
+      Unix.create_process program argv read_fd Unix.stdout Unix.stderr
+    in
+
+    Unix.close read_fd;
+
+    let output_channel = Unix.out_channel_of_descr write_fd in
+
+    output_string output_channel input;
+    close_out output_channel;
+
+    wait_for_pid pid
+  with Unix.Unix_error (error, function_name, argument) ->
+    Error (describe_unix_error error function_name argument)
+
+let run_command program arguments =
+  let command =
+    {
+      argv = (program, arguments);
+      cwd = Sys.getcwd ();
+      exec_mode = Spawn;
+      display = String.concat " " (program :: arguments);
+    }
+  in
+
+  spawn command |> Result.map_error (function `Exec_error message -> message)
+
+let first_available_command candidates =
+  candidates
+  |> List.find_map (fun (name, arguments) ->
+         name |> find_executable |> Option.map (fun path -> (path, arguments)))
+
+let copy_to_clipboard text =
+  let candidates =
+    [
+      ("pbcopy", []);
+      ("wl-copy", []);
+      ("xclip", [ "-selection"; "clipboard" ]);
+      ("xsel", [ "--clipboard"; "--input" ]);
+    ]
+  in
+
+  match first_available_command candidates with
+  | None -> Error "no clipboard command available"
+  | Some (program, arguments) ->
+      text
+      |> run_command_with_input program arguments
+      |> Result.map (fun () -> Some "copied session id to clipboard")
+
+let open_directory path =
+  let candidates = [ ("open", [ path ]); ("xdg-open", [ path ]) ] in
+
+  match first_available_command candidates with
+  | None -> Error "no directory opener available"
+  | Some (program, arguments) ->
+      arguments
+      |> run_command program
+      |> Result.map (fun () -> Some ("opened " ^ path))
 
 let tool_check tool =
   let label = tool |> Tool.to_string |> Printf.sprintf "tool %s" in
@@ -378,11 +480,22 @@ let execute_launch command =
 
 let execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
     ~config_warnings = function
+  | Sessy_ui.Launch command -> command |> execute_launch
+  | Sessy_ui.Copy_to_clipboard _
+  | Sessy_ui.Open_directory _
+  | Sessy_ui.Reload_index
+  | Sessy_ui.Exit
+  | Sessy_ui.Noop ->
+      prerr_endline "unexpected interactive command reached the CLI shell";
+      1
   | Sessy_ui.Print_notice message ->
       message |> print_output;
       0
   | Sessy_ui.Print_sessions (sessions, output_format) ->
       sessions |> Sessy_ui.format_sessions ~now output_format |> print_output;
+      0
+  | Sessy_ui.Print_preview preview ->
+      preview |> Sessy_ui.format_preview ~now |> print_output;
       0
   | Sessy_ui.Resolve_last launch_mode -> (
       match
@@ -432,27 +545,62 @@ let commands_need_sessions = function
   | Sessy_ui.Preview_session _ ->
       true
 
+let interactive_notice state =
+  state |> combined_warnings |> warning_summary
+
+let interactive_reload_snapshot ~config_paths () =
+  let state = load_runtime_state ~config_paths in
+
+  Ok
+    {
+      Sessy_ui.index = state.index;
+      config = state.config;
+      now = Unix.gettimeofday ();
+      warning = interactive_notice state;
+    }
+
+let run_picker ~config_paths ~cwd ~repo_root ~now =
+  if not (Unix.isatty Unix.stdin && Unix.isatty Unix.stdout) then (
+    prerr_endline "interactive mode requires a TTY";
+    1)
+  else
+    let state = load_runtime_state ~config_paths in
+    let handlers : Runtime.handlers =
+      {
+        copy_to_clipboard;
+        open_directory;
+        reload_snapshot = interactive_reload_snapshot ~config_paths;
+      }
+    in
+
+    match
+      Runtime.run ~index:state.index ~config:state.config ~cwd ~repo_root ~now
+        ~notice:(interactive_notice state) ~handlers
+    with
+    | `Exit -> 0
+    | `Launch command -> command |> execute_launch
+
 let run_once ~argv ~config_paths ~cwd ~now =
   argv |> Sessy_ui.parse_cli |> function
   | Error message ->
       prerr_endline message;
       1
+  | Ok Sessy_ui.Open_picker ->
+      run_picker ~config_paths ~cwd ~repo_root:(detect_git_root cwd) ~now
   | Ok action ->
-      let config, config_warnings =
-        config_paths |> Config_loader.load_config_from_paths
-      in
-
       if commands_need_sessions action then (
-        let sessions, session_warnings = load_sessions config in
-        let index = sessions |> Sessy_index.build in
-        let warnings = config_warnings @ session_warnings in
+        let state = load_runtime_state ~config_paths in
+        let warnings = state |> combined_warnings in
 
         print_warnings warnings;
 
-        Sessy_ui.dispatch action index config ~cwd
-        |> execute_cmds ~index ~cwd ~repo_root:(detect_git_root cwd) ~now
-             ~config_paths ~config ~config_warnings)
+        Sessy_ui.dispatch action state.index state.config ~cwd
+        |> execute_cmds ~index:state.index ~cwd ~repo_root:(detect_git_root cwd)
+             ~now ~config_paths ~config:state.config
+             ~config_warnings:state.config_warnings)
       else
+        let config, config_warnings = load_config_from_paths config_paths in
+
         Sessy_ui.dispatch action Sessy_index.empty config ~cwd
         |> execute_cmds ~index:Sessy_index.empty ~cwd ~repo_root:(detect_git_root cwd)
              ~now ~config_paths ~config ~config_warnings
