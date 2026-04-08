@@ -1,5 +1,6 @@
 (test
  (name test_main)
+ (modules test_main)
  (libraries
   sessy_domain
   sessy_core
@@ -15,8 +16,10 @@
 
 (test
  (name launch_profile_placeholder_test)
+ (modules launch_profile_placeholder_test)
  (libraries sessy_domain sessy_core alcotest))
 
 (test
  (name config_loader_profile_identity_test)
- (libraries sessy_domain sessy_shell alcotest))
+ (modules config_loader_profile_identity_test)
+ (libraries sessy_domain sessy_shell sessy_index sessy_ui alcotest))

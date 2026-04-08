@@ -1,8 +1,16 @@
 open Alcotest
 open Sessy_domain
 
+let require_session_id value =
+  value |> Session_id.of_string |> function
+  | Some session_id -> session_id
+  | None -> fail "expected a non-empty session id"
+
 let require_some label option_value =
   option_value |> function Some value -> value | None -> fail label
+
+let require_ok label result_value =
+  result_value |> function Ok value -> value | Error _ -> fail label
 
 let with_temp_file contents run =
   let path = Filename.temp_file "sessy-config-" ".toml" in
@@ -24,55 +32,118 @@ let contains_substring ~needle haystack =
 
   loop 0
 
-let test_profile_fallback_preserves_section_identity_with_extends () =
-  let base_config =
+let make_session ?(tool = Codex) ?(cwd = "/tmp/project") id =
+  {
+    id = require_session_id id;
+    tool;
+    title = Some "Launch profile identity";
+    first_prompt = Some "Check profile resolution";
+    cwd;
+    project_key = Some "sessy";
+    model = Some "gpt-5";
+    updated_at = 1_700_000_000.;
+    is_active = false;
+  }
+
+let test_cross_tool_extends_falls_back_to_section_identity () =
+  let has_cross_tool_warning warning =
+    warning
+    |> contains_substring
+         ~needle:"cross-tool extends=\"codex\" is unsupported; expected claude"
+    && (warning
+       |> contains_substring ~needle:"profiles.claude.fast.extends")
+  in
+  let raw_config =
     {|
+[profiles.codex.fast]
+argv_append = ["--profile", "codex-fast"]
+
 [profiles.claude.fast]
 extends = "codex"
-argv_append = ["--profile", "fast"]
-exec_mode = "exec"
+argv_append = ["--profile", "claude-fast"]
 |}
   in
-  let invalid_override = {|
-[profiles.claude.fast]
-argv_append = "skip"
-|} in
 
-  with_temp_file base_config (fun base_path ->
-      with_temp_file invalid_override (fun override_path ->
-          let config, warnings =
-            Sessy_shell.load_config_from_paths [ base_path; override_path ]
-          in
-          let fast_profiles =
-            config.profiles
-            |> List.filter (fun profile -> String.equal profile.name "fast")
-          in
-          let fast_profile =
-            fast_profiles
-            |> List.find_opt (fun profile -> Tool.equal profile.base_tool Codex)
-            |> require_some "expected Codex-backed fast profile"
-          in
+  with_temp_file raw_config (fun path ->
+      let loaded_config, warnings =
+        Sessy_shell.load_config_from_paths [ path ]
+      in
+      let config =
+        {
+          loaded_config with
+          sources = [];
+          launches =
+            [
+              ( Codex,
+                {
+                  argv_template =
+                    ("codex", [ "resume"; "{{profile}}"; "{{id}}" ]);
+                  cwd_policy = `Session;
+                  default_exec_mode = Spawn;
+                } );
+            ];
+        }
+      in
+      let session = make_session "01999f1e-084e-77d3-9b2d-5a2692a779d5" in
+      let index = Sessy_index.build [ session ] in
+      let codex_profiles =
+        config.profiles
+        |> List.filter (fun profile -> Tool.equal profile.base_tool Codex)
+      in
+      let claude_profiles =
+        config.profiles
+        |> List.filter (fun profile -> Tool.equal profile.base_tool Claude)
+      in
+      let codex_fast =
+        codex_profiles
+        |> List.find_opt (fun profile -> String.equal profile.name "fast")
+        |> require_some "expected codex fast profile"
+      in
+      let claude_fast =
+        claude_profiles
+        |> List.find_opt (fun profile -> String.equal profile.name "fast")
+        |> require_some "expected claude fast profile"
+      in
+      let command =
+        Sessy_shell.resolve_launch_cmd ~config ~index
+          ~request:(Sessy_shell.Session_request session.id)
+          ~active_profile:None ~launch_mode:Sessy_ui.Dry_run
+          ~cwd:"/tmp/fallback" ~repo_root:None ~now:1_900_000_000.
+        |> require_ok "expected codex launch to resolve deterministically"
+      in
 
-          check int "same section keeps one fast profile" 1
-            (List.length fast_profiles);
-          check (list string) "invalid override preserves Codex argv append"
-            [ "--profile"; "fast" ] fast_profile.argv_append;
-          check bool "invalid override preserves exec mode override" true
-            (match fast_profile.exec_mode_override with
-            | Some Exec -> true
-            | Some Spawn | Some Print | None -> false);
-          check bool "same-section warning recorded" true
-            (warnings
-            |> List.exists
-                 (contains_substring ~needle:"profiles.claude.fast.argv_append")
-            )))
+      check int "one Codex profile remains visible to Codex runtime" 1
+        (List.length codex_profiles);
+      check int "cross-tool extends stays in Claude section" 1
+        (List.length claude_profiles);
+      check (list string) "Codex profile keeps its args"
+        [ "--profile"; "codex-fast" ]
+        codex_fast.argv_append;
+      check (list string) "Claude section keeps its own args"
+        [ "--profile"; "claude-fast" ]
+        claude_fast.argv_append;
+      check
+        (pair string (list string))
+        "Codex launch resolves against Codex fast only"
+        ( "codex",
+          [
+            "resume";
+            "fast";
+            "01999f1e-084e-77d3-9b2d-5a2692a779d5";
+            "--profile";
+            "codex-fast";
+          ] )
+        command.argv;
+      check bool "cross-tool extends warning recorded" true
+        (warnings
+        |> List.exists has_cross_tool_warning))
 
 let () =
   run "config loader profile identity"
     [
       ( "profiles",
         [
-          test_case "same section override keeps extends-derived profile" `Quick
-            test_profile_fallback_preserves_section_identity_with_extends;
+          test_case "cross-tool extends falls back to section identity" `Quick
+            test_cross_tool_extends_falls_back_to_section_identity;
         ] );
     ]
