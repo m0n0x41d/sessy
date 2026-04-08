@@ -58,21 +58,10 @@ let fallback_profile tool profile_name =
   }
 
 let current_profile_for_section tool profile_name profiles =
-  let exact_matches =
-    profiles
-    |> List.filter (fun profile ->
-        Tool.equal profile.base_tool tool
-        && String.equal profile.name profile_name)
-  in
-
-  match exact_matches with
-  | profile :: _ -> Some profile
-  | [] -> (
-      profiles
-      |> List.filter (fun profile -> String.equal profile.name profile_name)
-      |> function
-      | [ profile ] -> Some profile
-      | _ -> None)
+  profiles
+  |> List.find_opt (fun profile ->
+         Tool.equal profile.base_tool tool
+         && String.equal profile.name profile_name)
 
 let find_optional toml accessor field =
   if not (Otoml.path_exists toml field) then Ok None
