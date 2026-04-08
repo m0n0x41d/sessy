@@ -91,12 +91,16 @@ For every step below:
 - Evidence: `lib/core/` now contains the Layer 1 modules for config merge, launch assembly, fuzzy matching, ranking, and the public `Sessy_core` facade.
 - Evidence: `dune build` and `dune test` both pass with the new acceptance coverage in `test/test_main.ml`.
 
-### [ ] Step: Source adapters
+### [x] Step: Source adapters
+<!-- chat-id: 3b6a63c8-e041-4bc8-8e6d-244b23a59bdf -->
 
 - Scope: T3.1-T3.4.
 - Do: define the `SOURCE` contract, implement Claude and Codex parsers over string input, and expose adapter dispatch.
 - Invariants: adapters stay pure and degrade gracefully on malformed lines; upstream storage differences must be resolved against live fixtures, not assumptions.
 - Verify: fixture-based adapter tests for both tools, including malformed-line resilience.
+- Evidence: `lib/adapter/` now contains the private `Source` contract, shared decode helpers, Claude and Codex parsers, and the public `Sessy_adapter` facade with tool dispatch.
+- Evidence: live detail inspection confirmed Claude transcript lines carry top-level `sessionId`/`cwd`/`timestamp` with nested `message.content`, while Codex transcript lines use top-level `timestamp` and nested `payload.id`/`payload.cwd`/`payload.content`.
+- Evidence: `dune build` and `dune test` both pass with fixture-backed coverage for history parsing, malformed-line skipping, detail hydration, and adapter dispatch.
 
 ### [ ] Step: Index and first CLI vertical slice
 

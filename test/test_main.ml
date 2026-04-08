@@ -42,8 +42,53 @@ let check_session_ids label expected sessions =
 let require_ranked label session_id ranked_sessions =
   ranked_sessions
   |> List.find_opt (fun ranked ->
-         String.equal session_id (Session_id.to_string ranked.session.id))
+      String.equal session_id (Session_id.to_string ranked.session.id))
   |> require_some label
+
+let fixture_path name =
+  let rec search_from directory remaining =
+    if remaining < 0 then None
+    else
+      let candidate =
+        Filename.concat directory (Filename.concat "fixtures" name)
+      in
+      let parent = Filename.dirname directory in
+
+      if Sys.file_exists candidate then Some candidate
+      else if String.equal parent directory then None
+      else search_from parent (remaining - 1)
+  in
+
+  let explicit_candidates =
+    [
+      Sys.getenv_opt "DUNE_SOURCEROOT"
+      |> Option.map (fun root ->
+             Filename.concat root (Filename.concat "fixtures" name));
+      Some (Filename.concat (Sys.getcwd ()) (Filename.concat "fixtures" name));
+      Some
+        (Filename.concat
+           (Filename.dirname Sys.executable_name)
+           (Filename.concat "fixtures" name));
+    ]
+    |> List.filter_map Fun.id
+  in
+  let fallback_roots =
+    [ Sys.getcwd (); Filename.dirname Sys.executable_name ]
+  in
+
+  explicit_candidates
+  |> List.find_opt Sys.file_exists
+  |> function
+  | Some path -> path
+  | None ->
+      fallback_roots
+      |> List.find_map (fun directory -> search_from directory 8)
+      |> function
+      | Some path -> path
+      | None -> fail ("missing fixture: " ^ name)
+
+let read_fixture name =
+  In_channel.with_open_bin (fixture_path name) In_channel.input_all
 
 let test_session_id_validation () =
   check bool "empty id rejected" false
@@ -285,9 +330,7 @@ let test_launch_expansion () =
     launch.display;
   check
     (pair string (list string))
-    "minimal templates stay non-empty"
-    ("codex", [])
-    minimal_launch.argv;
+    "minimal templates stay non-empty" ("codex", []) minimal_launch.argv;
   check
     (pair string (list string))
     "current template expands correctly"
@@ -299,7 +342,9 @@ let test_launch_expansion () =
     | Exec -> true
     | Spawn | Print -> false);
   check bool "blank program is rejected" true
-    (match Sessy_core.expand_template session_without_project None invalid_template with
+    (match
+       Sessy_core.expand_template session_without_project None invalid_template
+     with
     | Error (Invalid_value ("launch_template.argv_template", _)) -> true
     | Ok _ | Error _ -> false);
   check bool "mismatched profile is rejected" true
@@ -353,8 +398,7 @@ let test_rank_empty_query_orders_by_context_and_recency () =
     |> Sessy_core.sort_ranked
   in
   let recency_ranked =
-    ranked
-    |> require_ranked "expected recency-only result" "recent-1"
+    ranked |> require_ranked "expected recency-only result" "recent-1"
   in
 
   check_ranked_ids "empty query uses context then recency"
@@ -406,9 +450,7 @@ let test_rank_id_prefix_kind () =
 let test_rank_score_is_independent_of_result_set () =
   let now = 10_000. in
   let query = { text = ""; scope = All; tool_filter = None; mode = Meta } in
-  let target =
-    make_session ~cwd:"/tmp/target" ~updated_at:2_000. "target-1"
-  in
+  let target = make_session ~cwd:"/tmp/target" ~updated_at:2_000. "target-1" in
   let neighbor =
     make_session ~cwd:"/tmp/neighbor" ~updated_at:9_000. "neighbor-1"
   in
@@ -423,8 +465,7 @@ let test_rank_score_is_independent_of_result_set () =
     |> require_some "expected neighbor to rank"
   in
   let ranked_alone =
-    [ target_ranked ]
-    |> Sessy_core.sort_ranked
+    [ target_ranked ] |> Sessy_core.sort_ranked
     |> require_ranked "expected target in single-result sort" "target-1"
   in
   let ranked_with_neighbor =
@@ -433,8 +474,8 @@ let test_rank_score_is_independent_of_result_set () =
     |> require_ranked "expected target in multi-result sort" "target-1"
   in
 
-  check (float 0.000_001) "score is stable across result sets" ranked_alone.score
-    ranked_with_neighbor.score
+  check (float 0.000_001) "score is stable across result sets"
+    ranked_alone.score ranked_with_neighbor.score
 
 let test_filtering () =
   let sessions =
@@ -458,6 +499,124 @@ let test_filtering () =
   check_session_ids "tool filter keeps codex only" [ "repo-1"; "other-1" ]
     (Sessy_core.filter_tool (Some Codex) sessions)
 
+let test_claude_history_adapter () =
+  let raw = read_fixture "claude_history.jsonl" in
+  let sessions =
+    match Sessy_adapter.Claude.parse_history raw with
+    | Ok sessions -> sessions
+    | Error _ -> fail "expected Claude history fixture to parse"
+  in
+  let first_session =
+    match sessions with
+    | first_session :: _ -> first_session
+    | [] -> fail "expected Claude fixture sessions"
+  in
+
+  check int "missing session ids are skipped" 5 (List.length sessions);
+  check string "first Claude id" "414afc11-2e5d-43c2-bdcb-02842e4686ec"
+    (Session_id.to_string first_session.id);
+  check bool "Claude tool tagged" true (Tool.equal Claude first_session.tool);
+  check (option string) "Claude title"
+    (Some "List recent sessy tasks and show the repo-local ones first.")
+    first_session.title;
+  check string "Claude cwd" "/Users/example/Repos/projects/sessy"
+    first_session.cwd;
+  check (float 0.000_001) "Claude timestamp normalized to seconds"
+    1_775_634_717.07 first_session.updated_at
+
+let test_claude_history_adapter_skips_malformed_lines () =
+  let raw = read_fixture "claude_history.jsonl" ^ "\n{definitely-not-json}\n" in
+
+  match Sessy_adapter.Claude.parse_history raw with
+  | Ok sessions ->
+      check int "malformed Claude line skipped" 5 (List.length sessions)
+  | Error _ -> fail "malformed Claude lines should not poison valid entries"
+
+let test_claude_detail_adapter () =
+  let raw = read_fixture "claude_detail.jsonl" in
+  let session =
+    match Sessy_adapter.Claude.parse_detail raw with
+    | Ok session -> session
+    | Error _ -> fail "expected Claude detail sample to parse"
+  in
+
+  check string "Claude detail id" "81eb3289-6ac2-4ec3-bd85-fae85aae82ce"
+    (Session_id.to_string session.id);
+  check (option string) "Claude detail first prompt"
+    (Some "Inspect the adapter format using the live Claude transcript shape.")
+    session.first_prompt;
+  check (option string) "Claude detail model" (Some "claude-opus-4-6")
+    session.model;
+  check string "Claude detail cwd" "/Users/example/Repos/projects/sessy"
+    session.cwd;
+  check (float 0.000_001) "Claude detail timestamp" 1_774_566_488.593
+    session.updated_at
+
+let test_codex_history_adapter () =
+  let raw = read_fixture "codex_history.jsonl" in
+  let sessions =
+    match Sessy_adapter.Codex.parse_history raw with
+    | Ok sessions -> sessions
+    | Error _ -> fail "expected Codex history fixture to parse"
+  in
+  let first_session =
+    match sessions with
+    | first_session :: _ -> first_session
+    | [] -> fail "expected Codex fixture sessions"
+  in
+
+  check int "Codex history lines preserved" 6 (List.length sessions);
+  check string "first Codex id" "01999f1e-084e-77d3-9b2d-5a2692a779d5"
+    (Session_id.to_string first_session.id);
+  check bool "Codex tool tagged" true (Tool.equal Codex first_session.tool);
+  check (option string) "Codex title"
+    (Some
+       "Generate an OCaml project scaffold for sessy with dune, opam, and \
+        fixture directories.")
+    first_session.title;
+  check string "Codex cwd stays empty without hydration" "" first_session.cwd;
+  check (float 0.000_001) "Codex timestamp stays in seconds" 1_759_311_173.
+    first_session.updated_at
+
+let test_codex_history_adapter_skips_malformed_lines () =
+  let raw = read_fixture "codex_history.jsonl" ^ "\n{\"session_id\":42}\n" in
+
+  match Sessy_adapter.Codex.parse_history raw with
+  | Ok sessions ->
+      check int "malformed Codex line skipped" 6 (List.length sessions)
+  | Error _ -> fail "malformed Codex lines should not poison valid entries"
+
+let test_codex_detail_adapter () =
+  let raw = read_fixture "codex_detail.jsonl" in
+  let session =
+    match Sessy_adapter.Codex.parse_detail raw with
+    | Ok session -> session
+    | Error _ -> fail "expected Codex detail sample to parse"
+  in
+
+  check string "Codex detail id" "01999f1e-084e-77d3-9b2d-5a2692a779d5"
+    (Session_id.to_string session.id);
+  check (option string) "Codex detail first prompt"
+    (Some "Generate an OCaml contributor guide for the repository.")
+    session.first_prompt;
+  check (option string) "Codex detail model" (Some "gpt-5-codex")
+    session.model;
+  check string "Codex detail cwd" "/Users/example/Repos/projects/sessy"
+    session.cwd;
+  check (float 0.000_001) "Codex detail timestamp" 1_759_311_173.164
+    session.updated_at
+
+let test_adapter_dispatch () =
+  let module Claude_adapter =
+    (val Sessy_adapter.adapter_for_tool Claude : Sessy_adapter.SOURCE)
+  in
+  let module Codex_adapter =
+    (val Sessy_adapter.adapter_for_tool Codex : Sessy_adapter.SOURCE)
+  in
+  check bool "Claude dispatch" true (Tool.equal Claude Claude_adapter.tool);
+  check bool "Codex dispatch" true (Tool.equal Codex Codex_adapter.tool);
+  check int "all adapters exposed" 2 (List.length Sessy_adapter.all_adapters)
+
 let () =
   run "sessy"
     [
@@ -480,5 +639,19 @@ let () =
           test_case "rank scores stay set-independent" `Quick
             test_rank_score_is_independent_of_result_set;
           test_case "scope and tool filters" `Quick test_filtering;
+        ] );
+      ( "adapter",
+        [
+          test_case "Claude history fixture parsing" `Quick
+            test_claude_history_adapter;
+          test_case "Claude history malformed line resilience" `Quick
+            test_claude_history_adapter_skips_malformed_lines;
+          test_case "Claude detail parsing" `Quick test_claude_detail_adapter;
+          test_case "Codex history fixture parsing" `Quick
+            test_codex_history_adapter;
+          test_case "Codex history malformed line resilience" `Quick
+            test_codex_history_adapter_skips_malformed_lines;
+          test_case "Codex detail parsing" `Quick test_codex_detail_adapter;
+          test_case "adapter dispatch" `Quick test_adapter_dispatch;
         ] );
     ]

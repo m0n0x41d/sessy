@@ -1,0 +1,3 @@
+{"type":"session_meta","timestamp":"2025-10-01T09:32:50.000Z","payload":{"id":"01999f1e-084e-77d3-9b2d-5a2692a779d5","cwd":"/Users/example/Repos/projects/sessy","model_provider":"openai"}}
+{"type":"response_item","timestamp":"2025-10-01T09:32:51.500Z","payload":{"role":"user","type":"message","content":[{"type":"input_text","text":"Generate an OCaml contributor guide for the repository."}]}}
+{"type":"turn_context","timestamp":"2025-10-01T09:32:53.164Z","payload":{"model":"gpt-5-codex"}}

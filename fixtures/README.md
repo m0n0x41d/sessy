@@ -8,5 +8,7 @@ Observed on the local machine during the foundation step:
 - Claude project storage under `~/.claude/projects` contains nested session-memory and subagent files, so later adapter work should inspect the exact per-session layout before assuming a flat transcript path.
 - Codex history is JSONL with keys `session_id`, `text`, and `ts`.
 - Codex session transcripts live under `~/.codex/sessions/YYYY/MM/DD/rollout-...jsonl`.
+- Claude transcript detail lines observed for this step use top-level `type`/`sessionId`/`cwd`/`timestamp` with nested `message.content`.
+- Codex transcript detail lines observed for this step use top-level `type`/`timestamp` with nested `payload.id`/`payload.cwd`/`payload.content`.
 
 The fixtures in this directory keep those observed field names and timestamp shapes while replacing real prompts, ids, and paths with sanitized sample data.

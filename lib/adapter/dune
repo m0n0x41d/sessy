@@ -2,4 +2,4 @@
  (name sessy_adapter)
  (public_name sessy.adapter)
  (libraries sessy_domain sessy_core yojson)
- (preprocess (pps ppx_yojson_conv)))
+ (private_modules Source Decode Claude Codex))

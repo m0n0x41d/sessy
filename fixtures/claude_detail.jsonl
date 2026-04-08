@@ -1,0 +1,2 @@
+{"type":"user","cwd":"/Users/example/Repos/projects/sessy","sessionId":"81eb3289-6ac2-4ec3-bd85-fae85aae82ce","timestamp":"2026-03-26T23:08:01.120Z","message":{"role":"user","content":[{"type":"text","text":"Inspect the adapter format using the live Claude transcript shape."}]}}
+{"type":"assistant","cwd":"/Users/example/Repos/projects/sessy","sessionId":"81eb3289-6ac2-4ec3-bd85-fae85aae82ce","timestamp":"2026-03-26T23:08:08.593Z","message":{"role":"assistant","model":"claude-opus-4-6","content":[]}}

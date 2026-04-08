@@ -2,4 +2,6 @@
  (name test_main)
  (libraries sessy_domain sessy_core sessy_adapter sessy_index sessy_ui
             alcotest)
+ (deps
+  (source_tree ../fixtures))
  (preprocess (pps ppx_yojson_conv)))
