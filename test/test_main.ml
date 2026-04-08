@@ -12,6 +12,25 @@ let require_some label option_value =
 let require_ok label result_value =
   result_value |> function Ok value -> value | Error _ -> fail label
 
+let string_contains text pattern =
+  let text_length = String.length text in
+  let pattern_length = String.length pattern in
+
+  let rec loop index =
+    if pattern_length = 0 then true
+    else if index + pattern_length > text_length then false
+    else
+      let suffix = String.sub text index (text_length - index) in
+
+      if String.starts_with ~prefix:pattern suffix then true
+      else loop (index + 1)
+  in
+
+  loop 0
+
+let check_contains label text pattern =
+  check bool label true (string_contains text pattern)
+
 let make_session ?(tool = Claude) ?title ?first_prompt ?(cwd = "/tmp")
     ?project_key ?model ?(updated_at = 0.) ?(is_active = false) id =
   {
@@ -68,7 +87,7 @@ let fixture_path name =
     [
       Sys.getenv_opt "DUNE_SOURCEROOT"
       |> Option.map (fun root ->
-             Filename.concat root (Filename.concat "fixtures" name));
+          Filename.concat root (Filename.concat "fixtures" name));
       Some (Filename.concat (Sys.getcwd ()) (Filename.concat "fixtures" name));
       Some
         (Filename.concat
@@ -81,16 +100,13 @@ let fixture_path name =
     [ Sys.getcwd (); Filename.dirname Sys.executable_name ]
   in
 
-  explicit_candidates
-  |> List.find_opt Sys.file_exists
-  |> function
+  explicit_candidates |> List.find_opt Sys.file_exists |> function
   | Some path -> path
-  | None ->
-      fallback_roots
-      |> List.find_map (fun directory -> search_from directory 8)
+  | None -> (
+      fallback_roots |> List.find_map (fun directory -> search_from directory 8)
       |> function
       | Some path -> path
-      | None -> fail ("missing fixture: " ^ name)
+      | None -> fail ("missing fixture: " ^ name))
 
 let read_fixture name =
   In_channel.with_open_bin (fixture_path name) In_channel.input_all
@@ -98,8 +114,7 @@ let read_fixture name =
 let with_temp_file contents run =
   let path = Filename.temp_file "sessy-config-" ".toml" in
 
-  Out_channel.with_open_bin path (fun channel ->
-      output_string channel contents);
+  Out_channel.with_open_bin path (fun channel -> output_string channel contents);
 
   Fun.protect ~finally:(fun () -> Sys.remove path) (fun () -> run path)
 
@@ -132,7 +147,7 @@ let contains_substring ~needle haystack =
 let lookup_launch config tool =
   config.launches
   |> List.find_map (fun (candidate, launch) ->
-         if Tool.equal candidate tool then Some launch else None)
+      if Tool.equal candidate tool then Some launch else None)
   |> require_some "expected launch template"
 
 let fixture_runtime_config () =
@@ -664,8 +679,7 @@ let test_codex_detail_adapter () =
   check (option string) "Codex detail first prompt"
     (Some "Generate an OCaml contributor guide for the repository.")
     session.first_prompt;
-  check (option string) "Codex detail model" (Some "gpt-5-codex")
-    session.model;
+  check (option string) "Codex detail model" (Some "gpt-5-codex") session.model;
   check string "Codex detail cwd" "/Users/example/Repos/projects/sessy"
     session.cwd;
   check (float 0.000_001) "Codex detail timestamp" 1_759_311_173.164
@@ -712,55 +726,150 @@ let test_index_build_search_and_refresh () =
     (Sessy_index.all_sessions index);
   check (float 0.000_001) "most recent duplicate kept" 200. duplicate.updated_at;
   check_ranked_session_ids "search coordinates scope filter and ranking"
-    [ "dup-1"; "repo-1" ]
-    ranked;
+    [ "dup-1"; "repo-1" ] ranked;
   check int "refresh replaces contents" 1 (Sessy_index.count refreshed);
   check_session_ids "refresh keeps only new contents" [ "fresh-1" ]
     (Sessy_index.all_sessions refreshed)
 
 let test_cli_parse_dispatch_and_format () =
-  let session =
+  let cwd_session =
     make_session ~updated_at:60. ~title:"Fix ranking" ~cwd:"/repo/worktree"
       "abc12345zz"
   in
-  let index = Sessy_index.build [ session ] in
-  let commands =
+  let newer_other_session =
+    make_session ~updated_at:90. ~title:"Other repo" ~cwd:"/other" "def67890yy"
+  in
+  let index = Sessy_index.build [ newer_other_session; cwd_session ] in
+  let list_commands =
     Sessy_ui.dispatch (Sessy_ui.List_sessions Sessy_ui.Json) index
       Sessy_core.default_config ~cwd:"/repo/worktree"
   in
-  let plain = Sessy_ui.format_session_plain ~now:120. session in
-  let json = Sessy_ui.format_session_json session in
+  let resume_commands =
+    Sessy_ui.dispatch
+      (Sessy_ui.Resume_id (cwd_session.id, Sessy_ui.Dry_run))
+      index Sessy_core.default_config ~cwd:"/repo/worktree"
+  in
+  let last_commands =
+    Sessy_ui.dispatch (Sessy_ui.Resume_last Sessy_ui.Dry_run) index
+      Sessy_core.default_config ~cwd:"/repo/worktree"
+  in
+  let preview_commands =
+    Sessy_ui.dispatch (Sessy_ui.Preview_session cwd_session.id) index
+      Sessy_core.default_config ~cwd:"/repo/worktree"
+  in
+  let plain = Sessy_ui.format_session_plain ~now:120. cwd_session in
+  let json = Sessy_ui.format_session_json cwd_session in
+  let parsed_resume =
+    Sessy_ui.parse_cli [ "resume"; "abc12345zz"; "--dry-run" ]
+    |> require_ok "expected resume command to parse"
+  in
 
   check bool "default cli action opens picker" true
     (match Sessy_ui.parse_cli [] with
     | Ok Sessy_ui.Open_picker -> true
-    | Ok (Sessy_ui.List_sessions _) | Error _ -> false);
+    | Ok
+        ( Sessy_ui.List_sessions _ | Sessy_ui.Resume_last _
+        | Sessy_ui.Resume_id _ | Sessy_ui.Preview_session _ | Sessy_ui.Doctor )
+    | Error _ ->
+        false);
   check bool "list parses to plain output" true
     (match Sessy_ui.parse_cli [ "list" ] with
     | Ok (Sessy_ui.List_sessions Sessy_ui.Plain) -> true
-    | Ok Sessy_ui.Open_picker
-    | Ok (Sessy_ui.List_sessions Sessy_ui.Json)
-    | Error _ -> false);
+    | Ok
+        ( Sessy_ui.Open_picker
+        | Sessy_ui.List_sessions Sessy_ui.Json
+        | Sessy_ui.Resume_last _ | Sessy_ui.Resume_id _
+        | Sessy_ui.Preview_session _ | Sessy_ui.Doctor )
+    | Error _ ->
+        false);
   check bool "list --json parses to json output" true
     (match Sessy_ui.parse_cli [ "list"; "--json" ] with
     | Ok (Sessy_ui.List_sessions Sessy_ui.Json) -> true
-    | Ok Sessy_ui.Open_picker
-    | Ok (Sessy_ui.List_sessions Sessy_ui.Plain)
-    | Error _ -> false);
+    | Ok
+        ( Sessy_ui.Open_picker
+        | Sessy_ui.List_sessions Sessy_ui.Plain
+        | Sessy_ui.Resume_last _ | Sessy_ui.Resume_id _
+        | Sessy_ui.Preview_session _ | Sessy_ui.Doctor )
+    | Error _ ->
+        false);
+  check bool "last --dry-run parses" true
+    (match Sessy_ui.parse_cli [ "last"; "--dry-run" ] with
+    | Ok (Sessy_ui.Resume_last Sessy_ui.Dry_run) -> true
+    | Ok _ | Error _ -> false);
+  check bool "resume --dry-run parses" true
+    (match parsed_resume with
+    | Sessy_ui.Resume_id (session_id, Sessy_ui.Dry_run) ->
+        String.equal "abc12345zz" (Session_id.to_string session_id)
+    | Sessy_ui.Resume_id (_, Sessy_ui.Default) -> false
+    | Sessy_ui.Open_picker | Sessy_ui.List_sessions _ | Sessy_ui.Resume_last _
+    | Sessy_ui.Preview_session _ | Sessy_ui.Doctor ->
+        false);
+  check bool "preview parses" true
+    (match Sessy_ui.parse_cli [ "preview"; "abc12345zz" ] with
+    | Ok (Sessy_ui.Preview_session session_id) ->
+        String.equal "abc12345zz" (Session_id.to_string session_id)
+    | Ok _ | Error _ -> false);
+  check bool "doctor parses" true
+    (match Sessy_ui.parse_cli [ "doctor" ] with
+    | Ok Sessy_ui.Doctor -> true
+    | Ok _ | Error _ -> false);
+  check bool "unsupported flag stays an error" true
+    (match Sessy_ui.parse_cli [ "preview"; "abc12345zz"; "--dry-run" ] with
+    | Error _ -> true
+    | Ok _ -> false);
   check bool "unknown commands stay errors" true
     (match Sessy_ui.parse_cli [ "status" ] with
     | Error _ -> true
     | Ok _ -> false);
   check bool "list dispatch prints sessions" true
-    (match commands with
+    (match list_commands with
     | [ Sessy_ui.Print_sessions (sessions, Sessy_ui.Json) ] ->
-        session_ids sessions = [ "abc12345zz" ]
+        session_ids sessions = [ "def67890yy"; "abc12345zz" ]
     | _ -> false);
+  check bool "resume dispatch emits dry-run launch" true
+    (match resume_commands with
+    | [ Sessy_ui.Launch command ] -> (
+        command.argv = ("claude", [ "--resume"; "abc12345zz" ])
+        && match command.exec_mode with Print -> true | Spawn | Exec -> false)
+    | _ -> false);
+  check bool "last prefers cwd sessions over newer global ones" true
+    (match last_commands with
+    | [ Sessy_ui.Launch command ] ->
+        command.argv = ("claude", [ "--resume"; "abc12345zz" ])
+    | _ -> false);
+  check bool "preview dispatch includes session and launch" true
+    (match preview_commands with
+    | [ Sessy_ui.Print_preview preview ] -> (
+        String.equal "abc12345zz" (Session_id.to_string preview.session.id)
+        &&
+        match preview.launch with
+        | Ok command -> command.display = "claude --resume abc12345zz"
+        | Error _ -> false)
+    | _ -> false);
+  check bool "doctor dispatch requests a report" true
+    (match
+       Sessy_ui.dispatch Sessy_ui.Doctor index Sessy_core.default_config
+         ~cwd:"/repo/worktree"
+     with
+    | [ Sessy_ui.Run_doctor ] -> true
+    | _ -> false);
+  check string "preview formatting shows launch preview"
+    "id: abc12345zz\n\
+     tool: claude\n\
+     cwd: /repo/worktree\n\
+     project: -\n\
+     model: -\n\
+     title: Fix ranking\n\
+     first prompt: -\n\
+     last activity: 1m ago\n\
+     launch: claude --resume abc12345zz"
+    (match preview_commands with
+    | [ Sessy_ui.Print_preview preview ] ->
+        Sessy_ui.format_preview ~now:120. preview
+    | _ -> fail "expected a preview command");
   check string "plain formatting includes short id and age"
-    "[claude] abc12345 Fix ranking /repo/worktree 1m ago"
-    plain;
-  check string "json formatting includes id"
-    "abc12345zz"
+    "[claude] abc12345 Fix ranking /repo/worktree 1m ago" plain;
+  check string "json formatting includes id" "abc12345zz"
     (match json with
     | `Assoc fields -> (
         match List.assoc_opt "id" fields with
@@ -781,14 +890,13 @@ let test_shell_fs_and_config_loader () =
   let unsafe_profile =
     config.profiles
     |> List.find_opt (fun profile ->
-           Tool.equal profile.base_tool Claude
-           && String.equal profile.name "unsafe")
+        Tool.equal profile.base_tool Claude
+        && String.equal profile.name "unsafe")
     |> require_some "expected unsafe Claude profile"
   in
 
   check bool "fixture file is non-empty" true (String.length raw > 0);
-  check string "home expansion preserves suffix"
-    (home ^ "/.claude")
+  check string "home expansion preserves suffix" (home ^ "/.claude")
     (Sessy_shell.expand_home "~/.claude");
   check int "valid fixture config has no warnings" 0 (List.length warnings);
   check bool "fixture config keeps preview enabled" true config.preview;
@@ -832,15 +940,14 @@ argv_append = "skip"
       let unsafe_profile =
         config.profiles
         |> List.find_opt (fun profile ->
-               Tool.equal profile.base_tool Claude
-               && String.equal profile.name "unsafe")
+            Tool.equal profile.base_tool Claude
+            && String.equal profile.name "unsafe")
         |> require_some "expected unsafe Claude profile"
       in
 
       check bool "preview falls back to default" true config.preview;
       check string "history path falls back to default"
-        "~/.claude/history.jsonl"
-        claude_source.history_path;
+        "~/.claude/history.jsonl" claude_source.history_path;
       check
         (pair string (list string))
         "launch argv falls back to default"
@@ -849,13 +956,10 @@ argv_append = "skip"
       check (list string) "profile args fall back to empty list" []
         unsafe_profile.argv_append;
       check bool "invalid preview warning recorded" true
-        (warnings
-        |> List.exists
-             (contains_substring ~needle:"ui.preview"));
+        (warnings |> List.exists (contains_substring ~needle:"ui.preview"));
       check bool "invalid launch argv warning recorded" true
         (warnings
-        |> List.exists
-             (contains_substring ~needle:"launch.claude.argv")))
+        |> List.exists (contains_substring ~needle:"launch.claude.argv")))
 
 let test_shell_load_sessions_is_tolerant () =
   let config =
@@ -885,6 +989,27 @@ let test_shell_load_sessions_is_tolerant () =
     (sessions
     |> List.exists (fun (session : session) -> Tool.equal session.tool Codex))
 
+let test_doctor_report () =
+  let config = fixture_runtime_config () in
+  let report =
+    Sessy_shell.doctor_report
+      ~config_paths:
+        [ fixture_path "config.toml"; "/tmp/sessy-missing-config.toml" ]
+      ~config ~config_warnings:[ "fixture warning" ]
+  in
+
+  check_contains "doctor includes existing config path" report "[ok] config: ";
+  check_contains "doctor includes missing config path" report
+    "[warn] config: not found: /tmp/sessy-missing-config.toml";
+  check_contains "doctor includes config warnings" report
+    "[warn] config warning: fixture warning";
+  check_contains "doctor parses Claude fixtures" report
+    "[ok] source claude parse: 5 sessions";
+  check_contains "doctor parses Codex fixtures" report
+    "[ok] source codex parse: 6 sessions";
+  check_contains "doctor includes tool checks" report "tool claude:";
+  check_contains "doctor includes both tool checks" report "tool codex:"
+
 let test_e2e_fixture_pipeline () =
   let config = fixture_runtime_config () in
   let sessions, warnings = Sessy_shell.load_sessions config in
@@ -895,13 +1020,10 @@ let test_e2e_fixture_pipeline () =
       ~cwd:"/Users/example/Repos/projects/sessy"
       ~repo_root:(Some "/Users/example/Repos/projects/sessy")
   in
-  let selected =
-    ranked
-    |> List.hd
-    |> fun ranked -> ranked.session
-  in
+  let selected = ranked |> List.hd |> fun ranked -> ranked.session in
   let launch =
-    Sessy_core.expand_template selected None (lookup_launch config selected.tool)
+    Sessy_core.expand_template selected None
+      (lookup_launch config selected.tool)
     |> require_ok "expected launch expansion from fixture result"
   in
   let json_output =
@@ -930,8 +1052,7 @@ let test_e2e_fixture_pipeline () =
   check
     (pair string (list string))
     "launch template expands for selected fixture session"
-    ( "claude",
-      [ "--resume"; "2f10b8a3-c44c-4cc2-b2f9-48d2541e8b1a" ] )
+    ("claude", [ "--resume"; "2f10b8a3-c44c-4cc2-b2f9-48d2541e8b1a" ])
     launch.argv;
   check int "json output contains every indexed session" 9
     (match Yojson.Safe.from_string json_output with
@@ -995,9 +1116,7 @@ let () =
             test_shell_config_loader_invalid_types_fall_back;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
+          test_case "doctor report" `Quick test_doctor_report;
         ] );
-      ( "e2e",
-        [
-          test_case "fixture pipeline" `Quick test_e2e_fixture_pipeline;
-        ] );
+      ("e2e", [ test_case "fixture pipeline" `Quick test_e2e_fixture_pipeline ]);
     ]

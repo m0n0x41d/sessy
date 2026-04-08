@@ -6,10 +6,7 @@ let read_file path =
 
 let list_dir path =
   try
-    path
-    |> Sys.readdir
-    |> Array.to_list
-    |> List.sort String.compare
+    path |> Sys.readdir |> Array.to_list |> List.sort String.compare
     |> Result.ok
   with Sys_error message -> io_error message
 
@@ -25,7 +22,8 @@ let expand_home path =
   if String.equal path "~" then home |> Option.value ~default:path
   else if String.starts_with ~prefix:"~/" path then
     home
-    |> Option.map (fun value -> value ^ String.sub path 1 (String.length path - 1))
+    |> Option.map (fun value ->
+        value ^ String.sub path 1 (String.length path - 1))
     |> Option.value ~default:path
   else path
 

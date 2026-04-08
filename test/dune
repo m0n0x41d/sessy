@@ -1,11 +1,17 @@
 (test
  (name test_main)
- (libraries sessy_domain sessy_core sessy_adapter sessy_index sessy_ui
-            sessy_shell
-            alcotest)
+ (libraries
+  sessy_domain
+  sessy_core
+  sessy_adapter
+  sessy_index
+  sessy_ui
+  sessy_shell
+  alcotest)
  (deps
   (source_tree ../fixtures))
- (preprocess (pps ppx_yojson_conv)))
+ (preprocess
+  (pps ppx_yojson_conv)))
 
 (test
  (name launch_profile_placeholder_test)

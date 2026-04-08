@@ -1,11 +1,7 @@
-type tool =
-  | Claude
-  | Codex
+type tool = Claude | Codex
 
 module Tool : sig
-  type t = tool =
-    | Claude
-    | Codex
+  type t = tool = Claude | Codex
 
   val compare : t -> t -> int
   val equal : t -> t -> bool
@@ -34,14 +30,8 @@ type session = {
   is_active : bool;
 }
 
-type scope =
-  | Cwd
-  | Repo
-  | All
-
-type search_mode =
-  | Meta
-  | Deep
+type scope = Cwd | Repo | All
+type search_mode = Meta | Deep
 
 type query = {
   text : string;
@@ -59,16 +49,8 @@ type match_kind =
   | Fuzzy
   | Recency
 
-type ranked = {
-  session : session;
-  score : float;
-  match_kind : match_kind;
-}
-
-type exec_mode =
-  | Spawn
-  | Exec
-  | Print
+type ranked = { session : session; score : float; match_kind : match_kind }
+type exec_mode = Spawn | Exec | Print
 
 type launch_cmd = {
   argv : string * string list;

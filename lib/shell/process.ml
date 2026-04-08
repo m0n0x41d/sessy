@@ -2,15 +2,11 @@ open Sessy_domain
 
 let exec_error message = Error (`Exec_error message)
 
-let argv_list command =
-  let head, tail = command.argv in
+let argv_list command = let head, tail = command.argv in
 
-  head :: tail
+                        head :: tail
 
-let argv_array command =
-  command
-  |> argv_list
-  |> Array.of_list
+let argv_array command = command |> argv_list |> Array.of_list
 
 let with_cwd cwd work =
   let original_cwd = Sys.getcwd () in

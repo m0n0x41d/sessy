@@ -83,8 +83,7 @@ let payload_string paths json =
 let first_string_across_jsons paths jsons =
   paths
   |> List.find_map (fun path ->
-      jsons
-      |> List.find_map (payload_string [ path ]))
+      jsons |> List.find_map (payload_string [ path ]))
 
 let detail_prompt json =
   let is_user_message =
@@ -130,7 +129,9 @@ let parse_detail raw =
   let model =
     jsons
     |> first_string_across_jsons
-         [ [ "payload"; "model" ]; [ "model" ]; [ "payload"; "model_provider" ] ]
+         [
+           [ "payload"; "model" ]; [ "model" ]; [ "payload"; "model_provider" ];
+         ]
   in
 
   match (lines, jsons, session_id, cwd, updated_at) with

@@ -1,5 +1,12 @@
 (library
  (name sessy_shell)
  (public_name sessy.shell)
- (libraries sessy_domain sessy_core sessy_ui sessy_adapter sessy_index
-            eio_main otoml unix))
+ (libraries
+  sessy_domain
+  sessy_core
+  sessy_ui
+  sessy_adapter
+  sessy_index
+  eio_main
+  otoml
+  unix))

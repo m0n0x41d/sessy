@@ -4,13 +4,10 @@ type warnings = string list
 
 let tool_name = Tool.to_string
 let default_tool_order = [ Claude; Codex ]
-
-let warning path message =
-  Printf.sprintf "%s: %s" path message
+let warning path message = Printf.sprintf "%s: %s" path message
 
 let field_warning path field message =
-  field
-  |> Otoml.string_of_path
+  field |> Otoml.string_of_path
   |> Printf.sprintf "%s: %s" message
   |> warning path
 
@@ -22,7 +19,7 @@ let lookup_launch tool launches =
 
 let replace_source sources source =
   let rec loop acc = function
-    | [] -> (source :: acc) |> List.rev
+    | [] -> source :: acc |> List.rev
     | current :: tail when Tool.equal current.tool source.tool ->
         List.rev_append acc (source :: tail)
     | current :: tail -> loop (current :: acc) tail
@@ -32,7 +29,7 @@ let replace_source sources source =
 
 let replace_launch launches tool launch =
   let rec loop acc = function
-    | [] -> ((tool, launch) :: acc) |> List.rev
+    | [] -> (tool, launch) :: acc |> List.rev
     | (current_tool, _) :: tail when Tool.equal current_tool tool ->
         List.rev_append acc ((tool, launch) :: tail)
     | current :: tail -> loop (current :: acc) tail
@@ -42,7 +39,7 @@ let replace_launch launches tool launch =
 
 let replace_profile profiles profile =
   let rec loop acc = function
-    | [] -> (profile :: acc) |> List.rev
+    | [] -> profile :: acc |> List.rev
     | current :: tail
       when Tool.equal current.base_tool profile.base_tool
            && String.equal current.name profile.name ->
@@ -54,16 +51,10 @@ let replace_profile profiles profile =
 
 let find_optional toml accessor field =
   if not (Otoml.path_exists toml field) then Ok None
-  else
-    field
-    |> Otoml.find_result toml accessor
-    |> Result.map Option.some
+  else field |> Otoml.find_result toml accessor |> Result.map Option.some
 
-let find_string toml field =
-  find_optional toml Otoml.get_string field
-
-let find_bool toml field =
-  find_optional toml Otoml.get_boolean field
+let find_string toml field = find_optional toml Otoml.get_string field
+let find_bool toml field = find_optional toml Otoml.get_boolean field
 
 let find_string_list toml field =
   find_optional toml (Otoml.get_array Otoml.get_string) field
@@ -81,16 +72,13 @@ let keep_optional_string path field fallback warnings toml =
   | Error message -> (fallback, field_warning path field message :: warnings)
 
 let keep_string path field fallback warnings toml =
-  find_string toml field
-  |> keep_on_error path field fallback warnings
+  find_string toml field |> keep_on_error path field fallback warnings
 
 let keep_bool path field fallback warnings toml =
-  find_bool toml field
-  |> keep_on_error path field fallback warnings
+  find_bool toml field |> keep_on_error path field fallback warnings
 
 let keep_string_list path field fallback warnings toml =
-  find_string_list toml field
-  |> keep_on_error path field fallback warnings
+  find_string_list toml field |> keep_on_error path field fallback warnings
 
 let parse_scope = function
   | "cwd" -> Ok Cwd
@@ -116,14 +104,14 @@ let update_ui path base toml warnings =
     | Ok (Some value) -> (
         match value |> String.lowercase_ascii |> parse_scope with
         | Ok scope -> (scope, warnings)
-        | Error message -> (base.default_scope, warning path message :: warnings))
+        | Error message -> (base.default_scope, warning path message :: warnings)
+        )
     | Error message ->
         ( base.default_scope,
           field_warning path [ "ui"; "scope" ] message :: warnings )
   in
   let preview, warnings =
-    toml
-    |> keep_bool path [ "ui"; "preview" ] base.preview warnings
+    toml |> keep_bool path [ "ui"; "preview" ] base.preview warnings
   in
 
   ({ base with default_scope; preview }, warnings)
@@ -135,25 +123,26 @@ let update_sources path base toml warnings =
          match lookup_source tool config.sources with
          | None -> (config, warnings)
          | Some current -> (
-             match
-               Otoml.path_exists toml [ "sources"; tool_name tool ]
-             with
+             match Otoml.path_exists toml [ "sources"; tool_name tool ] with
              | false -> (config, warnings)
              | true ->
                  let source_path = [ "sources"; tool_name tool ] in
                  let history, warnings =
                    toml
-                   |> keep_string path (source_path @ [ "history" ])
+                   |> keep_string path
+                        (source_path @ [ "history" ])
                         current.history_path warnings
                  in
                  let projects_path, warnings =
                    toml
-                   |> keep_optional_string path (source_path @ [ "projects" ])
+                   |> keep_optional_string path
+                        (source_path @ [ "projects" ])
                         current.projects_path warnings
                  in
                  let sessions_path, warnings =
                    toml
-                   |> keep_optional_string path (source_path @ [ "sessions" ])
+                   |> keep_optional_string path
+                        (source_path @ [ "sessions" ])
                         current.sessions_path warnings
                  in
                  let source =
@@ -164,7 +153,8 @@ let update_sources path base toml warnings =
                      sessions_path;
                    }
                  in
-                 ({ config with sources = replace_source config.sources source }, warnings)))
+                 ( { config with sources = replace_source config.sources source },
+                   warnings )))
        (base, warnings)
 
 let update_launches path base toml warnings =
@@ -178,8 +168,7 @@ let update_launches path base toml warnings =
              if not (Otoml.path_exists toml launch_path) then (config, warnings)
              else
                let current_argv =
-                 current.argv_template
-                 |> fun (head, tail) -> head :: tail
+                 current.argv_template |> fun (head, tail) -> head :: tail
                in
                let argv_template, warnings =
                  match
@@ -188,41 +177,51 @@ let update_launches path base toml warnings =
                  with
                  | [], warnings ->
                      ( current.argv_template,
-                       warning path "launch argv must be non-empty" :: warnings )
+                       warning path "launch argv must be non-empty" :: warnings
+                     )
                  | head :: tail, warnings -> ((head, tail), warnings)
                in
                let cwd_policy, warnings =
                  match find_string toml (launch_path @ [ "cwd_policy" ]) with
                  | Ok None -> (current.cwd_policy, warnings)
                  | Ok (Some value) -> (
-                     match value |> String.lowercase_ascii |> parse_cwd_policy with
+                     match
+                       value |> String.lowercase_ascii |> parse_cwd_policy
+                     with
                      | Ok value -> (value, warnings)
                      | Error message ->
                          (current.cwd_policy, warning path message :: warnings))
                  | Error message ->
                      ( current.cwd_policy,
-                       field_warning path (launch_path @ [ "cwd_policy" ]) message
+                       field_warning path
+                         (launch_path @ [ "cwd_policy" ])
+                         message
                        :: warnings )
                in
                let default_exec_mode, warnings =
                  match find_string toml (launch_path @ [ "exec_mode" ]) with
                  | Ok None -> (current.default_exec_mode, warnings)
                  | Ok (Some value) -> (
-                     match value |> String.lowercase_ascii |> parse_exec_mode with
+                     match
+                       value |> String.lowercase_ascii |> parse_exec_mode
+                     with
                      | Ok value -> (value, warnings)
                      | Error message ->
                          ( current.default_exec_mode,
                            warning path message :: warnings ))
                  | Error message ->
                      ( current.default_exec_mode,
-                       field_warning path (launch_path @ [ "exec_mode" ]) message
+                       field_warning path
+                         (launch_path @ [ "exec_mode" ])
+                         message
                        :: warnings )
                in
-               let launch =
-                 { argv_template; cwd_policy; default_exec_mode }
-               in
+               let launch = { argv_template; cwd_policy; default_exec_mode } in
 
-               ( { config with launches = replace_launch config.launches tool launch },
+               ( {
+                   config with
+                   launches = replace_launch config.launches tool launch;
+                 },
                  warnings ))
        (base, warnings)
 
@@ -246,10 +245,14 @@ let update_profiles path base toml warnings =
                       let base_tool, warnings =
                         match find_string profile_toml [ "extends" ] with
                         | Ok (Some value)
-                          when String.equal (String.lowercase_ascii value) "codex" ->
+                          when String.equal
+                                 (String.lowercase_ascii value)
+                                 "codex" ->
                             (Codex, warnings)
                         | Ok (Some value)
-                          when String.equal (String.lowercase_ascii value) "claude" ->
+                          when String.equal
+                                 (String.lowercase_ascii value)
+                                 "claude" ->
                             (Claude, warnings)
                         | Ok (Some value) ->
                             let warning_message =
@@ -260,17 +263,28 @@ let update_profiles path base toml warnings =
                             (tool, warning path warning_message :: warnings)
                         | Ok None -> (tool, warnings)
                         | Error message ->
-                            (tool, field_warning path extends_field message :: warnings)
+                            ( tool,
+                              field_warning path extends_field message
+                              :: warnings )
                       in
                       let argv_append_field =
-                        [ "profiles"; tool_name tool; profile_name; "argv_append" ]
+                        [
+                          "profiles";
+                          tool_name tool;
+                          profile_name;
+                          "argv_append";
+                        ]
                       in
                       let argv_append, warnings =
-                        match find_string_list profile_toml [ "argv_append" ] with
+                        match
+                          find_string_list profile_toml [ "argv_append" ]
+                        with
                         | Ok None -> ([], warnings)
                         | Ok (Some value) -> (value, warnings)
                         | Error message ->
-                            ([], field_warning path argv_append_field message :: warnings)
+                            ( [],
+                              field_warning path argv_append_field message
+                              :: warnings )
                       in
                       let exec_mode_override, warnings =
                         match find_string profile_toml [ "exec_mode" ] with
@@ -284,15 +298,30 @@ let update_profiles path base toml warnings =
                                 (None, warning path message :: warnings))
                         | Error message ->
                             let exec_mode_field =
-                              [ "profiles"; tool_name tool; profile_name; "exec_mode" ]
+                              [
+                                "profiles";
+                                tool_name tool;
+                                profile_name;
+                                "exec_mode";
+                              ]
                             in
-                            (None, field_warning path exec_mode_field message :: warnings)
+                            ( None,
+                              field_warning path exec_mode_field message
+                              :: warnings )
                       in
                       let profile =
-                        { name = profile_name; base_tool; argv_append; exec_mode_override }
+                        {
+                          name = profile_name;
+                          base_tool;
+                          argv_append;
+                          exec_mode_override;
+                        }
                       in
 
-                      ( { config with profiles = replace_profile config.profiles profile },
+                      ( {
+                          config with
+                          profiles = replace_profile config.profiles profile;
+                        },
                         warnings ))
                     (config, warnings))
        (base, warnings)
@@ -332,8 +361,7 @@ let load_config_from_paths paths =
 
 let default_paths () =
   [
-    "~/.config/sessy/config.toml";
-    Filename.concat (Sys.getcwd ()) ".sessy.toml";
+    "~/.config/sessy/config.toml"; Filename.concat (Sys.getcwd ()) ".sessy.toml";
   ]
 
 let load_config () = load_config_from_paths (default_paths ())

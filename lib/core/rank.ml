@@ -122,9 +122,7 @@ let best_signal signals =
 
 let recency_bonus ~now updated_at =
   let age_hours =
-    now -. updated_at
-    |> Float.max 0.
-    |> fun seconds -> seconds /. 3600.
+    now -. updated_at |> Float.max 0. |> fun seconds -> seconds /. 3600.
   in
 
   200. *. Float.exp (-.age_hours /. 168.)
@@ -133,10 +131,7 @@ let resolve_match_kind query_text signals =
   match signals with
   | [] when String.length query_text = 0 -> Recency
   | [] -> Recency
-  | _ ->
-      signals
-      |> best_signal
-      |> Option.value ~default:Recency
+  | _ -> signals |> best_signal |> Option.value ~default:Recency
 
 let rank query ~now ~cwd ~repo_root session =
   let query_text = query.text |> normalized_query in

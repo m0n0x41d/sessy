@@ -2,6 +2,7 @@ open Sessy_domain
 
 let option_or_empty value = value |> Option.value ~default:""
 let profile_placeholder = "{{profile}}"
+
 let session_placeholders =
   [
     ("{{id}}", fun session -> Session_id.to_string session.id);
@@ -47,7 +48,7 @@ let find_placeholder_end value start_index =
 let session_placeholder_value session placeholder =
   session_placeholders
   |> List.find_map (fun (pattern, render) ->
-         if String.equal pattern placeholder then Some (render session) else None)
+      if String.equal pattern placeholder then Some (render session) else None)
 
 let profile_placeholder_value profile value =
   match profile with
@@ -56,9 +57,8 @@ let profile_placeholder_value profile value =
       Error
         (Invalid_value
            ( "launch_template.argv_template",
-             Printf.sprintf
-               "template requires an active profile for %S"
-               value ))
+             Printf.sprintf "template requires an active profile for %S" value
+           ))
 
 let placeholder_value session profile value placeholder =
   if String.equal placeholder profile_placeholder then
@@ -75,20 +75,17 @@ let expand_arg session profile value =
 
   let rec loop index =
     if index >= value_length then Ok (Buffer.contents buffer)
-    else if index + 1 < value_length && value.[index] = '{' && value.[index + 1] = '{' then
-      index
-      |> find_placeholder_end value
-      |> function
+    else if
+      index + 1 < value_length && value.[index] = '{' && value.[index + 1] = '{'
+    then
+      index |> find_placeholder_end value |> function
       | None ->
           Buffer.add_char buffer value.[index];
           loop (index + 1)
       | Some end_index ->
-          let placeholder =
-            String.sub value index (end_index - index)
-          in
+          let placeholder = String.sub value index (end_index - index) in
 
-          Result.bind
-            (placeholder_value session profile value placeholder)
+          Result.bind (placeholder_value session profile value placeholder)
             (fun replacement ->
               Buffer.add_string buffer replacement;
               loop end_index)
@@ -100,8 +97,7 @@ let expand_arg session profile value =
   loop 0
 
 let append_profile_args profile argv =
-  argv
-  |> fun current ->
+  argv |> fun current ->
   match profile with
   | None -> current
   | Some selected -> current @ selected.argv_append
@@ -109,13 +105,10 @@ let append_profile_args profile argv =
 let collect_results items =
   let collect accumulated current =
     Result.bind accumulated (fun collected ->
-        current
-        |> Result.map (fun item -> item :: collected))
+        current |> Result.map (fun item -> item :: collected))
   in
 
-  items
-  |> List.rev
-  |> List.fold_left collect (Ok [])
+  items |> List.rev |> List.fold_left collect (Ok [])
 
 let resolve_cwd (session : session) cwd_policy =
   match cwd_policy with `Session -> session.cwd | `Current -> "."
@@ -127,34 +120,21 @@ let resolve_exec_mode profile template =
       selected.exec_mode_override
       |> Option.value ~default:template.default_exec_mode
 
-let argv_elements (head, tail) =
-  head :: tail
+let argv_elements (head, tail) = head :: tail
 
 let is_shell_safe_char = function
   | 'a' .. 'z'
   | 'A' .. 'Z'
   | '0' .. '9'
-  | '/'
-  | '.'
-  | '_'
-  | '-'
-  | ':'
-  | '='
-  | ','
-  | '+'
-  | '@'
-  | '%'
-  | '^' ->
+  | '/' | '.' | '_' | '-' | ':' | '=' | ',' | '+' | '@' | '%' | '^' ->
       true
   | _ -> false
 
 let requires_shell_quotes value =
-  value = ""
-  || not (String.for_all is_shell_safe_char value)
+  value = "" || not (String.for_all is_shell_safe_char value)
 
 let quote_display_arg value =
-  value
-  |> fun current ->
+  value |> fun current ->
   if requires_shell_quotes current then
     current
     |> replace_literal ~pattern:"'" ~replacement:"'\"'\"'"
@@ -162,24 +142,18 @@ let quote_display_arg value =
   else current
 
 let render_display argv =
-  argv
-  |> argv_elements
-  |> List.map quote_display_arg
-  |> String.concat " "
+  argv |> argv_elements |> List.map quote_display_arg |> String.concat " "
 
 let incompatible_profile_error (session : session) (profile : profile) =
   Invalid_value
     ( "profile.base_tool",
-      Printf.sprintf
-        "profile %s targets %s but session %s uses %s"
-        profile.name
+      Printf.sprintf "profile %s targets %s but session %s uses %s" profile.name
         (Tool.to_string profile.base_tool)
         (Session_id.to_string session.id)
         (Tool.to_string session.tool) )
 
 let resolve_profile (session : session) (profile : profile option) =
-  profile
-  |> function
+  profile |> function
   | None -> Ok None
   | Some selected when Tool.equal selected.base_tool session.tool ->
       Ok (Some selected)
@@ -187,22 +161,17 @@ let resolve_profile (session : session) (profile : profile option) =
 
 let invalid_program_error value =
   Invalid_value
-    ("launch_template.argv_template", Printf.sprintf "program is blank: %S" value)
+    ( "launch_template.argv_template",
+      Printf.sprintf "program is blank: %S" value )
 
 let validate_program value =
-  value
-  |> String.trim
-  |> String.length
-  |> function
+  value |> String.trim |> String.length |> function
   | 0 -> Error (invalid_program_error value)
   | _ -> Ok value
 
 let expand_argv_template session profile argv_template =
   let head, tail = argv_template in
-  let expanded_head =
-    head
-    |> expand_arg session profile
-  in
+  let expanded_head = head |> expand_arg session profile in
   let expanded_tail =
     tail
     |> List.map (expand_arg session profile)
@@ -210,23 +179,19 @@ let expand_argv_template session profile argv_template =
     |> Result.map (append_profile_args profile)
   in
 
-  Result.bind expanded_head validate_program
-  |> fun validated_head ->
+  Result.bind expanded_head validate_program |> fun validated_head ->
   Result.bind validated_head (fun valid_head ->
-         expanded_tail
-         |> Result.map (fun valid_tail -> (valid_head, valid_tail)))
+      expanded_tail |> Result.map (fun valid_tail -> (valid_head, valid_tail)))
 
 let expand_template session profile template =
-  profile
-  |> resolve_profile session
-  |> fun resolved_profile ->
+  profile |> resolve_profile session |> fun resolved_profile ->
   Result.bind resolved_profile (fun compatible_profile ->
       template.argv_template
       |> expand_argv_template session compatible_profile
       |> Result.map (fun argv ->
-             {
-               argv;
-               cwd = resolve_cwd session template.cwd_policy;
-               exec_mode = resolve_exec_mode compatible_profile template;
-               display = render_display argv;
-             }))
+          {
+            argv;
+            cwd = resolve_cwd session template.cwd_policy;
+            exec_mode = resolve_exec_mode compatible_profile template;
+            display = render_display argv;
+          }))

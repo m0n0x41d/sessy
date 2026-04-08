@@ -115,12 +115,17 @@ For every step below:
 - Evidence: `test/test_main.ml` now covers index semantics, CLI parsing/dispatch/formatting, shell config/source loading, and a fixture-backed E2E pipeline from source files to JSON output and launch expansion.
 - Runtime evidence: `dune build`, `dune test`, and `dune exec sessy -- list --json` all succeed on the current machine.
 
-### [ ] Step: CLI resume, preview, and diagnostics
+### [x] Step: CLI resume, preview, and diagnostics
+<!-- chat-id: b142eb0b-741e-4941-bfd3-8152ee2a0b7c -->
 
 - Scope: T5.9-T5.11.
 - Do: implement `sessy last`, `sessy resume <id>`, `sessy preview <id>`, `sessy doctor`, and dry-run support.
 - Invariants: session lookup failures become user-facing errors, not crashes; dry-run prints the exact argv-derived command; doctor stays read-only.
 - Verify: `dune exec sessy -- last --dry-run`, `dune exec sessy -- resume <id> --dry-run`, `dune exec sessy -- preview <id>`, and `dune exec sessy -- doctor`.
+- Evidence: `lib/ui/sessy_ui.ml` and `lib/ui/sessy_ui.mli` now parse and dispatch `last`, `resume <id>`, `preview <id>`, `doctor`, and `--dry-run`, while keeping launch/preview/doctor work encoded as commands instead of effects.
+- Evidence: `lib/shell/sessy_shell.ml` and `lib/shell/sessy_shell.mli` now execute launch commands, render preview output, and produce a read-only doctor report covering config paths, source paths, parseability, tool presence, and per-source session counts.
+- Evidence: `test/test_main.ml` now covers dry-run parsing/dispatch, last-session selection, preview formatting, and doctor reporting in addition to the existing fixture-backed E2E coverage.
+- Runtime evidence: `dune build` and `dune test` pass, and fixture-backed manual checks confirmed `dune exec sessy -- last --dry-run`, `dune exec sessy -- resume 2f10b8a3-c44c-4cc2-b2f9-48d2541e8b1a --dry-run`, `dune exec sessy -- preview 2f10b8a3-c44c-4cc2-b2f9-48d2541e8b1a`, and `dune exec sessy -- doctor`.
 
 ### [ ] Step: TUI interaction layer
 

@@ -1,11 +1,7 @@
-type tool =
-  | Claude
-  | Codex
+type tool = Claude | Codex
 
 module Tool = struct
-  type t = tool =
-    | Claude
-    | Codex
+  type t = tool = Claude | Codex
 
   let compare left right =
     match (left, right) with
@@ -14,39 +10,20 @@ module Tool = struct
     | Codex, Claude -> 1
     | Codex, Codex -> 0
 
-  let equal left right =
-    left
-    |> compare right
-    |> Int.equal 0
-
-  let to_string = function
-    | Claude -> "claude"
-    | Codex -> "codex"
+  let equal left right = left |> compare right |> Int.equal 0
+  let to_string = function Claude -> "claude" | Codex -> "codex"
 end
 
 module Session_id = struct
   type t = string
 
   let of_string value =
-    value
-    |> String.length
-    |> function
-    | 0 -> None
-    | _ -> Some value
+    value |> String.length |> function 0 -> None | _ -> Some value
 
   let to_string value = value
-
-  let short value =
-    value
-    |> String.length
-    |> Int.min 8
-    |> String.sub value 0
-
-  let equal left right =
-    String.equal left right
-
-  let compare left right =
-    String.compare left right
+  let short value = value |> String.length |> Int.min 8 |> String.sub value 0
+  let equal left right = String.equal left right
+  let compare left right = String.compare left right
 end
 
 type session = {
@@ -61,14 +38,8 @@ type session = {
   is_active : bool;
 }
 
-type scope =
-  | Cwd
-  | Repo
-  | All
-
-type search_mode =
-  | Meta
-  | Deep
+type scope = Cwd | Repo | All
+type search_mode = Meta | Deep
 
 type query = {
   text : string;
@@ -86,16 +57,8 @@ type match_kind =
   | Fuzzy
   | Recency
 
-type ranked = {
-  session : session;
-  score : float;
-  match_kind : match_kind;
-}
-
-type exec_mode =
-  | Spawn
-  | Exec
-  | Print
+type ranked = { session : session; score : float; match_kind : match_kind }
+type exec_mode = Spawn | Exec | Print
 
 type launch_cmd = {
   argv : string * string list;
