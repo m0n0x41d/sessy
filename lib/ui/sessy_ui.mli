@@ -15,10 +15,11 @@ type preview = {
 }
 
 type cmd =
-  | Launch of Sessy_domain.launch_cmd
   | Print_notice of string
   | Print_sessions of Sessy_domain.session list * output_format
-  | Print_preview of preview
+  | Resolve_last of launch_mode
+  | Resolve_resume of Sessy_domain.Session_id.t * launch_mode
+  | Resolve_preview of Sessy_domain.Session_id.t
   | Run_doctor
   | Print_error of string
 

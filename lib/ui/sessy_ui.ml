@@ -13,13 +13,63 @@ type cli_action =
 
 type preview = { session : session; launch : (launch_cmd, string) result }
 
+type terminal = {
+  width : int;
+  height : int;
+}
+
+type model = {
+  index : Sessy_index.t;
+  config : config;
+  query : query;
+  results : ranked list;
+  cursor : int;
+  preview_visible : bool;
+  help_visible : bool;
+  active_profile : string option;
+  cwd : string;
+  repo_root : string option;
+  now : float;
+  terminal : terminal;
+  notice : string option;
+}
+
+type reload_snapshot = {
+  index : Sessy_index.t;
+  config : config;
+  now : float;
+  warning : string option;
+}
+
 type cmd =
   | Launch of launch_cmd
+  | Copy_to_clipboard of string
+  | Open_directory of string
+  | Reload_index
+  | Exit
+  | Noop
   | Print_notice of string
   | Print_sessions of session list * output_format
   | Print_preview of preview
   | Run_doctor
   | Print_error of string
+
+type msg =
+  | Query_changed of string
+  | Cursor_moved of int
+  | Scope_toggled
+  | Tool_filter_toggled
+  | Search_mode_toggled
+  | Preview_toggled
+  | Help_toggled
+  | Session_selected
+  | Copy_requested
+  | Open_directory_requested
+  | Reload_requested
+  | Reload_finished of reload_snapshot
+  | Notice_set of string option
+  | Window_resized of terminal
+  | Quit
 
 type parsed_args = {
   dry_run : bool;
@@ -27,6 +77,17 @@ type parsed_args = {
   positionals : string list;
   unknown_flags : string list;
 }
+
+let minimum_terminal_width = 60
+let minimum_terminal_height = 12
+let preview_threshold_width = 100
+let ansi_reset = "\027[0m"
+let ansi_bold = "\027[1m"
+let ansi_dim = "\027[2m"
+let ansi_inverse = "\027[7m"
+
+let style style text =
+  [ style; text; ansi_reset ] |> String.concat ""
 
 let empty_args =
   { dry_run = false; json = false; positionals = []; unknown_flags = [] }
@@ -81,12 +142,12 @@ let parse_cli = function
               match args.positionals with
               | [ session_id ] ->
                   session_id |> parse_session_id
-                  |> Result.map (fun session_id ->
-                      let launch_mode =
-                        if args.dry_run then Dry_run else Default
-                      in
+                  |> Result.map (fun parsed ->
+                         let launch_mode =
+                           if args.dry_run then Dry_run else Default
+                         in
 
-                      Resume_id (session_id, launch_mode))
+                         Resume_id (parsed, launch_mode))
               | [] -> Error "resume requires a session id"
               | _ -> Error "resume accepts exactly one session id")
         | "preview" -> (
@@ -98,7 +159,7 @@ let parse_cli = function
               match args.positionals with
               | [ session_id ] ->
                   session_id |> parse_session_id
-                  |> Result.map (fun session_id -> Preview_session session_id)
+                  |> Result.map (fun parsed -> Preview_session parsed)
               | [] -> Error "preview requires a session id"
               | _ -> Error "preview accepts exactly one session id")
         | "doctor" ->
@@ -119,7 +180,7 @@ let config_error_message = function
 let lookup_launch (config : config) tool =
   config.launches
   |> List.find_map (fun (candidate, launch) ->
-      if Tool.equal candidate tool then Some launch else None)
+         if Tool.equal candidate tool then Some launch else None)
   |> function
   | Some launch -> Ok launch
   | None ->
@@ -127,12 +188,24 @@ let lookup_launch (config : config) tool =
       |> Printf.sprintf "missing launch template for %s"
       |> Result.error
 
-let launch_for_session (config : config) (session : session) =
+let lookup_profile (config : config) active_profile tool =
+  active_profile
+  |> Option.bind (fun profile_name ->
+         config.profiles
+         |> List.find_opt (fun profile ->
+                String.equal profile.name profile_name
+                && Tool.equal profile.base_tool tool))
+
+let launch_for_session (config : config) active_profile (session : session) =
   match lookup_launch config session.tool with
   | Error _ as error -> error
   | Ok launch ->
+      let profile =
+        session.tool |> lookup_profile config active_profile
+      in
+
       launch
-      |> Sessy_core.expand_template session None
+      |> Sessy_core.expand_template session profile
       |> Result.map_error config_error_message
 
 let apply_launch_mode launch_mode launch =
@@ -140,9 +213,12 @@ let apply_launch_mode launch_mode launch =
   | Default -> launch
   | Dry_run -> { launch with exec_mode = Print }
 
-let prepare_launch launch_mode config session =
-  session |> launch_for_session config
+let prepare_launch launch_mode config active_profile session =
+  session |> launch_for_session config active_profile
   |> Result.map (apply_launch_mode launch_mode)
+
+let preview_for_session config active_profile session =
+  { session; launch = session |> launch_for_session config active_profile }
 
 let select_last_session index ~cwd =
   let sessions = Sessy_index.all_sessions index in
@@ -160,35 +236,34 @@ let session_not_found_message session_id =
 
 let dispatch action index config ~cwd =
   match action with
-  | Open_picker -> [ Print_notice "interactive mode is not implemented yet" ]
+  | Open_picker -> [ Print_notice "interactive mode is handled by the shell" ]
   | List_sessions output_format ->
       [ Print_sessions (Sessy_index.all_sessions index, output_format) ]
   | Resume_last launch_mode -> (
       match select_last_session index ~cwd with
       | None -> [ Print_error "no sessions available" ]
       | Some session -> (
-          match prepare_launch launch_mode config session with
+          match prepare_launch launch_mode config None session with
           | Ok launch -> [ Launch launch ]
           | Error message -> [ Print_error message ]))
   | Resume_id (session_id, launch_mode) -> (
       match Sessy_index.find_by_id index session_id with
       | None -> [ Print_error (session_not_found_message session_id) ]
       | Some session -> (
-          match prepare_launch launch_mode config session with
+          match prepare_launch launch_mode config None session with
           | Ok launch -> [ Launch launch ]
           | Error message -> [ Print_error message ]))
   | Preview_session session_id -> (
       match Sessy_index.find_by_id index session_id with
       | None -> [ Print_error (session_not_found_message session_id) ]
       | Some session ->
-          let launch = session |> launch_for_session config in
+          let preview = session |> preview_for_session config None in
 
-          [ Print_preview { session; launch } ])
+          [ Print_preview preview ])
   | Doctor -> [ Run_doctor ]
 
 let relative_age ~now updated_at =
   let age_seconds = now -. updated_at |> Float.max 0. |> int_of_float in
-
   let minute = 60 in
   let hour = 60 * minute in
   let day = 24 * hour in
@@ -268,3 +343,377 @@ let format_sessions ~now output_format sessions =
   | Json ->
       sessions |> List.map format_session_json |> fun values ->
       `List values |> Yojson.Safe.to_string
+
+let clamp_int minimum maximum value =
+  value |> Int.max minimum |> Int.min maximum
+
+let normalize_terminal terminal =
+  {
+    width = terminal.width |> Int.max minimum_terminal_width;
+    height = terminal.height |> Int.max minimum_terminal_height;
+  }
+
+let default_query config =
+  {
+    text = "";
+    scope = config.default_scope;
+    tool_filter = None;
+    mode = Meta;
+  }
+
+let search_results index query ~now ~cwd ~repo_root =
+  Sessy_index.search index query ~now ~cwd ~repo_root
+
+let clamp_cursor cursor results =
+  match results |> List.length with
+  | 0 -> 0
+  | count -> cursor |> clamp_int 0 (count - 1)
+
+let with_results model results =
+  { model with results; cursor = clamp_cursor model.cursor results }
+
+let rerun_search model =
+  search_results model.index model.query ~now:model.now ~cwd:model.cwd
+    ~repo_root:model.repo_root
+  |> with_results model
+
+let init index config ~cwd ~repo_root ~now ~terminal ~notice =
+  let query = config |> default_query in
+  let terminal = terminal |> normalize_terminal in
+  let results = search_results index query ~now ~cwd ~repo_root in
+
+  {
+    index;
+    config;
+    query;
+    results;
+    cursor = 0;
+    preview_visible = config.preview;
+    help_visible = false;
+    active_profile = None;
+    cwd;
+    repo_root;
+    now;
+    terminal;
+    notice;
+  }
+
+let scope_label = function
+  | Cwd -> "cwd"
+  | Repo -> "repo"
+  | All -> "all"
+
+let tool_filter_label = function
+  | None -> "all"
+  | Some tool -> Tool.to_string tool
+
+let search_mode_label = function
+  | Meta -> "meta"
+  | Deep -> "deep"
+
+let cycle_scope = function
+  | Cwd -> Repo
+  | Repo -> All
+  | All -> Cwd
+
+let cycle_tool_filter = function
+  | None -> Some Claude
+  | Some Claude -> Some Codex
+  | Some Codex -> None
+
+let cycle_search_mode = function
+  | Meta -> Deep
+  | Deep -> Meta
+
+let profile_still_exists config active_profile =
+  active_profile
+  |> Option.filter (fun profile_name ->
+         config.profiles
+         |> List.exists (fun profile ->
+                String.equal profile.name profile_name))
+
+let selected_ranked model =
+  model.results |> List.nth_opt model.cursor
+
+let selected_session model =
+  model |> selected_ranked |> Option.map (fun ranked -> ranked.session)
+
+let selected_preview model =
+  model |> selected_session
+  |> Option.map (preview_for_session model.config model.active_profile)
+
+let with_notice model notice =
+  { model with notice }
+
+let update_query model text =
+  {
+    model with
+    query = { model.query with text };
+    cursor = 0;
+    notice = None;
+  }
+  |> rerun_search
+
+let update_scope model =
+  {
+    model with
+    query = { model.query with scope = cycle_scope model.query.scope };
+    cursor = 0;
+    notice = None;
+  }
+  |> rerun_search
+
+let update_tool_filter model =
+  {
+    model with
+    query =
+      {
+        model.query with
+        tool_filter = cycle_tool_filter model.query.tool_filter;
+      };
+    cursor = 0;
+    notice = None;
+  }
+  |> rerun_search
+
+let update_search_mode model =
+  let mode = model.query.mode |> cycle_search_mode in
+  let notice =
+    match mode with
+    | Meta -> None
+    | Deep -> Some "deep search is metadata-backed in this build"
+  in
+
+  {
+    model with
+    query = { model.query with mode };
+    cursor = 0;
+    notice;
+  }
+  |> rerun_search
+
+let update_cursor model delta =
+  let maximum =
+    model.results |> List.length |> fun count -> Int.max 0 (count - 1)
+  in
+
+  { model with cursor = model.cursor + delta |> clamp_int 0 maximum; notice = None }
+
+let update_session_selected model =
+  match model |> selected_session with
+  | None -> (model |> with_notice (Some "no session selected"), Noop)
+  | Some session -> (
+      match prepare_launch Default model.config model.active_profile session with
+      | Ok launch -> ({ model with notice = None }, Launch launch)
+      | Error message -> (model |> with_notice (Some message), Noop))
+
+let update_copy_requested model =
+  match model |> selected_session with
+  | None -> (model |> with_notice (Some "no session selected"), Noop)
+  | Some session ->
+      let text = session.id |> Session_id.to_string in
+
+      ({ model with notice = None }, Copy_to_clipboard text)
+
+let update_open_directory_requested model =
+  match model |> selected_session with
+  | None -> (model |> with_notice (Some "no session selected"), Noop)
+  | Some session -> ({ model with notice = None }, Open_directory session.cwd)
+
+let update_reload_finished model snapshot =
+  let active_profile =
+    profile_still_exists snapshot.config model.active_profile
+  in
+
+  {
+    model with
+    index = snapshot.index;
+    config = snapshot.config;
+    now = snapshot.now;
+    active_profile;
+    notice = snapshot.warning;
+  }
+  |> rerun_search
+
+let update model = function
+  | Query_changed text -> (model |> update_query text, Noop)
+  | Cursor_moved delta -> (model |> update_cursor delta, Noop)
+  | Scope_toggled -> (model |> update_scope, Noop)
+  | Tool_filter_toggled -> (model |> update_tool_filter, Noop)
+  | Search_mode_toggled -> (model |> update_search_mode, Noop)
+  | Preview_toggled ->
+      ({ model with preview_visible = not model.preview_visible; notice = None }, Noop)
+  | Help_toggled ->
+      ({ model with help_visible = not model.help_visible; notice = None }, Noop)
+  | Session_selected -> model |> update_session_selected
+  | Copy_requested -> model |> update_copy_requested
+  | Open_directory_requested -> model |> update_open_directory_requested
+  | Reload_requested -> ({ model with notice = Some "reloading sessions..." }, Reload_index)
+  | Reload_finished snapshot -> (snapshot |> update_reload_finished model, Noop)
+  | Notice_set notice -> (model |> with_notice notice, Noop)
+  | Window_resized terminal ->
+      ({ model with terminal = terminal |> normalize_terminal }, Noop)
+  | Quit -> ({ model with notice = None }, Exit)
+
+let rec take count values =
+  match (count, values) with
+  | count, _ when count <= 0 -> []
+  | _, [] -> []
+  | count, head :: tail -> head :: take (count - 1) tail
+
+let rec drop count values =
+  match (count, values) with
+  | count, values when count <= 0 -> values
+  | _, [] -> []
+  | count, _ :: tail -> drop (count - 1) tail
+
+let lines_of_count count =
+  count |> Int.max 0 |> fun lines -> List.init lines (fun _ -> "")
+
+let truncate width text =
+  let ellipsis = "..." in
+
+  if width <= 0 then ""
+  else if String.length text <= width then text
+  else if width <= String.length ellipsis then String.sub ellipsis 0 width
+  else
+    let prefix_length = width - String.length ellipsis in
+
+    String.sub text 0 prefix_length ^ ellipsis
+
+let pad width text =
+  let text = text |> truncate width in
+  let padding = width - String.length text |> Int.max 0 in
+
+  text ^ String.make padding ' '
+
+let query_display text =
+  if String.equal text "" then "<type to filter>" else text
+
+let header_lines model =
+  [
+    Printf.sprintf "sessy  query: %s" (query_display model.query.text);
+    Printf.sprintf "scope:%s  tool:%s  mode:%s  profile:%s  results:%d"
+      (scope_label model.query.scope)
+      (tool_filter_label model.query.tool_filter)
+      (search_mode_label model.query.mode)
+      (model.active_profile |> Option.value ~default:"-")
+      (List.length model.results);
+  ]
+
+let footer_lines model =
+  match model.help_visible with
+  | false ->
+      [
+        "Enter resume | Tab preview | Ctrl-Y copy | Ctrl-O open | Ctrl-S scope | Ctrl-T tool | Ctrl-F deep | Ctrl-R reload | ? help | Esc quit";
+      ]
+  | true ->
+      [
+        "Shortcuts: Enter resume | Up/Down move | Tab preview | Ctrl-Y copy id | Ctrl-O open cwd";
+        "Scope/tool/mode: Ctrl-S cycle scope | Ctrl-T cycle tool | Ctrl-F toggle deep | Ctrl-R reload | ? hide help | Esc quit";
+      ]
+
+let notice_lines model =
+  model.notice
+  |> Option.map (fun message -> [ "notice: " ^ message ])
+  |> Option.value ~default:[]
+
+let row_text model ranked =
+  let session = ranked.session in
+  let marker = if session.is_active then "*" else " " in
+
+  Printf.sprintf "%s [%s] %s %s %s %s"
+    marker
+    (Tool.to_string session.tool)
+    (Session_id.short session.id)
+    (title_or_placeholder session)
+    session.cwd
+    (relative_age ~now:model.now session.updated_at)
+
+let viewport_start total_rows visible_rows cursor =
+  let maximum_start = total_rows - visible_rows |> Int.max 0 in
+  let desired = cursor - (visible_rows / 2) in
+
+  desired |> clamp_int 0 maximum_start
+
+let list_lines model width height =
+  let total_rows = List.length model.results in
+  let start = viewport_start total_rows height model.cursor in
+  let visible = model.results |> drop start |> take height in
+
+  match visible with
+  | [] ->
+      let placeholder = "No sessions match the current query." |> pad width in
+
+      placeholder :: lines_of_count (height - 1)
+  | rows ->
+      let rendered =
+        rows
+        |> List.mapi (fun offset ranked ->
+               let index = start + offset in
+               let text = ranked |> row_text model |> pad width in
+
+               if Int.equal index model.cursor then text |> style ansi_inverse
+               else text)
+      in
+
+      rendered @ lines_of_count (height - List.length rendered)
+
+let preview_lines model width height =
+  let title = "Preview" |> pad width |> style ansi_bold in
+  let body =
+    model |> selected_preview
+    |> Option.map (fun preview -> preview |> format_preview ~now:model.now)
+    |> Option.value ~default:"No session selected."
+    |> String.split_on_char '\n'
+    |> List.map (pad width)
+  in
+
+  (title :: body) |> take height |> fun lines ->
+  lines @ lines_of_count (height - List.length lines)
+
+let render_single_pane model width body_height =
+  model |> list_lines width body_height
+
+let render_split_panes model width body_height =
+  let left_width = ((width * 3) / 5) - 2 |> Int.max 30 in
+  let right_width = width - left_width - 3 |> Int.max 20 in
+  let left = model |> list_lines left_width body_height in
+  let right = model |> preview_lines right_width body_height in
+
+  List.map2 (fun left_line right_line -> left_line ^ " | " ^ right_line) left right
+
+let preview_enabled model =
+  model.preview_visible && model.terminal.width >= preview_threshold_width
+
+let body_lines model body_height =
+  if preview_enabled model then
+    model |> render_split_panes model.terminal.width body_height
+  else model |> render_single_pane model.terminal.width body_height
+
+let view model =
+  let width = model.terminal.width in
+  let header =
+    model |> header_lines
+    |> List.map (pad width)
+    |> function
+    | [] -> []
+    | first :: tail -> (first |> style ansi_bold) :: tail
+  in
+  let footer =
+    model |> footer_lines
+    |> List.map (pad width)
+    |> List.map (style ansi_dim)
+  in
+  let notices = model |> notice_lines |> List.map (pad width) in
+  let reserved =
+    List.length header + List.length footer + List.length notices
+  in
+  let body_height = model.terminal.height - reserved |> Int.max 3 in
+  let body = model |> body_lines body_height in
+
+  header
+  @ body
+  @ notices
+  @ footer
+  |> String.concat "\n"

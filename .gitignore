@@ -29,3 +29,4 @@ Thumbs.db
 
 # Agent tooling
 .zenflow/
+.zencoder/

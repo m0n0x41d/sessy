@@ -9,6 +9,27 @@ val load_config_from_paths : string list -> Sessy_domain.config * string list
 val load_sessions :
   Sessy_domain.config -> Sessy_domain.session list * string list
 
+type launch_request =
+  | Last_request
+  | Session_request of Sessy_domain.Session_id.t
+
+val resolve_launch_cmd :
+  config:Sessy_domain.config ->
+  index:Sessy_index.t ->
+  request:launch_request ->
+  launch_mode:Sessy_ui.launch_mode ->
+  cwd:string ->
+  repo_root:string option ->
+  now:float ->
+  (Sessy_domain.launch_cmd, string) result
+
+val resolve_preview :
+  config:Sessy_domain.config ->
+  index:Sessy_index.t ->
+  session_id:Sessy_domain.Session_id.t ->
+  cwd:string ->
+  (Sessy_ui.preview, string) result
+
 val doctor_report :
   config_paths:string list ->
   config:Sessy_domain.config ->

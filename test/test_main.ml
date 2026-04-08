@@ -763,6 +763,19 @@ let test_cli_parse_dispatch_and_format () =
   in
   let plain = Sessy_ui.format_session_plain ~now:120. cwd_session in
   let json = Sessy_ui.format_session_json cwd_session in
+  let preview =
+    {
+      Sessy_ui.session = cwd_session;
+      launch =
+        Ok
+          {
+            argv = ("claude", [ "--resume"; "abc12345zz" ]);
+            cwd = "/repo/worktree";
+            exec_mode = Spawn;
+            display = "claude --resume abc12345zz";
+          };
+    }
+  in
   let parsed_resume =
     Sessy_ui.parse_cli [ "resume"; "abc12345zz"; "--dry-run" ]
     |> require_ok "expected resume command to parse"
@@ -832,23 +845,17 @@ let test_cli_parse_dispatch_and_format () =
     | _ -> false);
   check bool "resume dispatch emits dry-run launch" true
     (match resume_commands with
-    | [ Sessy_ui.Launch command ] -> (
-        command.argv = ("claude", [ "--resume"; "abc12345zz" ])
-        && match command.exec_mode with Print -> true | Spawn | Exec -> false)
+    | [ Sessy_ui.Resolve_resume (session_id, Sessy_ui.Dry_run) ] ->
+        String.equal "abc12345zz" (Session_id.to_string session_id)
     | _ -> false);
   check bool "last prefers cwd sessions over newer global ones" true
     (match last_commands with
-    | [ Sessy_ui.Launch command ] ->
-        command.argv = ("claude", [ "--resume"; "abc12345zz" ])
+    | [ Sessy_ui.Resolve_last Sessy_ui.Dry_run ] -> true
     | _ -> false);
   check bool "preview dispatch includes session and launch" true
     (match preview_commands with
-    | [ Sessy_ui.Print_preview preview ] -> (
-        String.equal "abc12345zz" (Session_id.to_string preview.session.id)
-        &&
-        match preview.launch with
-        | Ok command -> command.display = "claude --resume abc12345zz"
-        | Error _ -> false)
+    | [ Sessy_ui.Resolve_preview session_id ] ->
+        String.equal "abc12345zz" (Session_id.to_string session_id)
     | _ -> false);
   check bool "doctor dispatch requests a report" true
     (match
@@ -872,10 +879,7 @@ let test_cli_parse_dispatch_and_format () =
      first prompt: -\n\
      last activity: 1m ago\n\
      launch: claude --resume abc12345zz"
-    (match preview_commands with
-    | [ Sessy_ui.Print_preview preview ] ->
-        Sessy_ui.format_preview ~now:120. preview
-    | _ -> fail "expected a preview command");
+    (Sessy_ui.format_preview ~now:120. preview);
   check string "plain formatting includes short id and age"
     "[claude] abc12345 Fix ranking /repo/worktree 1m ago" plain;
   check string "json formatting includes id" "abc12345zz"
@@ -1032,6 +1036,76 @@ let test_shell_load_sessions_is_tolerant () =
     (sessions
     |> List.exists (fun (session : session) -> Tool.equal session.tool Codex))
 
+let test_shell_resolve_launch_hydrates_codex_detail () =
+  let config = fixture_runtime_config () in
+  let sessions, warnings = Sessy_shell.load_sessions config in
+  let index = Sessy_index.build sessions in
+  let session_id = require_session_id "01999f1e-084e-77d3-9b2d-5a2692a779d5" in
+  let command =
+    Sessy_shell.resolve_launch_cmd ~config ~index
+      ~request:(Sessy_shell.Session_request session_id)
+      ~launch_mode:Sessy_ui.Dry_run ~cwd:"/tmp/fallback"
+      ~repo_root:(Some "/Users/example/Repos/projects/sessy")
+      ~now:1_900_000_000.
+    |> require_ok "expected Codex launch to resolve"
+  in
+
+  check int "fixture load still has no warnings" 0 (List.length warnings);
+  check
+    (pair string (list string))
+    "Codex launch argv keeps the native resume contract"
+    ("codex", [ "resume"; "01999f1e-084e-77d3-9b2d-5a2692a779d5" ])
+    command.argv;
+  check string "Codex launch uses hydrated detail cwd"
+    "/Users/example/Repos/projects/sessy"
+    command.cwd;
+  check bool "dry-run forces print mode" true
+    (match command.exec_mode with Print -> true | Spawn | Exec -> false)
+
+let test_shell_resolve_preview_hydrates_detail () =
+  let config = fixture_runtime_config () in
+  let sessions, _warnings = Sessy_shell.load_sessions config in
+  let index = Sessy_index.build sessions in
+  let session_id = require_session_id "01999f1e-084e-77d3-9b2d-5a2692a779d5" in
+  let preview =
+    Sessy_shell.resolve_preview ~config ~index ~session_id ~cwd:"/tmp/fallback"
+    |> require_ok "expected preview to resolve"
+  in
+
+  check string "preview hydrates cwd from Codex detail"
+    "/Users/example/Repos/projects/sessy"
+    preview.session.cwd;
+  check string "preview hydrates model from Codex detail" "gpt-5-codex"
+    (preview.session.model |> require_some "expected model");
+  check string "preview hydrates first prompt from Codex detail"
+    "Generate an OCaml contributor guide for the repository."
+    (preview.session.first_prompt |> require_some "expected first prompt");
+  check bool "preview launch remains available after hydration" true
+    (match preview.launch with
+    | Ok command ->
+        String.equal "codex resume 01999f1e-084e-77d3-9b2d-5a2692a779d5"
+          command.display
+    | Error _ -> false)
+
+let test_shell_resolve_last_prefers_repo_ranking () =
+  let config = Sessy_core.default_config in
+  let repo_session = make_session ~cwd:"/repo/lib" ~updated_at:100. "repo-1" in
+  let global_session = make_session ~cwd:"/outside" ~updated_at:500. "other-1" in
+  let index = Sessy_index.build [ global_session; repo_session ] in
+  let command =
+    Sessy_shell.resolve_launch_cmd ~config ~index
+      ~request:Sessy_shell.Last_request
+      ~launch_mode:Sessy_ui.Dry_run ~cwd:"/repo/app"
+      ~repo_root:(Some "/repo") ~now:1_000.
+    |> require_ok "expected last command to resolve"
+  in
+
+  check
+    (pair string (list string))
+    "last uses repo-aware ranking instead of newest global session"
+    ("claude", [ "--resume"; "repo-1" ])
+    command.argv
+
 let test_doctor_report () =
   let config = fixture_runtime_config () in
   let report =
@@ -1183,6 +1257,12 @@ let () =
             test_shell_profile_override_preserves_prior_values_on_invalid_input;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
+          test_case "resolve launch hydrates Codex detail" `Quick
+            test_shell_resolve_launch_hydrates_codex_detail;
+          test_case "resolve preview hydrates detail" `Quick
+            test_shell_resolve_preview_hydrates_detail;
+          test_case "resolve last prefers repo ranking" `Quick
+            test_shell_resolve_last_prefers_repo_ranking;
           test_case "doctor report" `Quick test_doctor_report;
           test_case "bare sessy exits cleanly" `Quick
             test_shell_run_once_open_picker_is_success;

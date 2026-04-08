@@ -50,6 +50,215 @@ let load_sessions config =
 let print_warnings warnings = warnings |> List.iter prerr_endline
 let print_output text = if String.equal text "" then () else print_endline text
 
+type launch_request =
+  | Last_request
+  | Session_request of Session_id.t
+
+let config_error_message = function
+  | File_not_found path -> Printf.sprintf "file not found: %s" path
+  | Parse_failed message -> message
+  | Invalid_value (field, message) -> Printf.sprintf "%s: %s" field message
+
+let session_not_found_message session_id =
+  session_id |> Session_id.to_string |> Printf.sprintf "session not found: %s"
+
+let lookup_launch config tool =
+  config.launches
+  |> List.find_map (fun (candidate, launch) ->
+         if Tool.equal candidate tool then Some launch else None)
+  |> function
+  | Some launch -> Ok launch
+  | None ->
+      tool
+      |> Tool.to_string
+      |> Printf.sprintf "missing launch template for %s"
+      |> Result.error
+
+let lookup_source config tool =
+  config.sources
+  |> List.find_opt (fun source -> Tool.equal source.tool tool)
+
+let string_contains text pattern =
+  let text_length = String.length text in
+  let pattern_length = String.length pattern in
+
+  let rec loop index =
+    if pattern_length = 0 then true
+    else if index + pattern_length > text_length then false
+    else
+      let suffix = String.sub text index (text_length - index) in
+
+      if String.starts_with ~prefix:pattern suffix then true
+      else loop (index + 1)
+  in
+
+  loop 0
+
+let path_is_directory path =
+  try Sys.is_directory path with Sys_error _ -> false
+
+let detail_roots source =
+  [ source.sessions_path; source.projects_path ]
+  |> List.filter_map Fun.id
+  |> List.map expand_home
+  |> List.sort_uniq String.compare
+
+let detail_name_matches session_id name =
+  let session_id = session_id |> Session_id.to_string in
+
+  [
+    name;
+    Filename.basename name;
+  ]
+  |> List.exists (fun candidate ->
+         String.equal candidate session_id
+         || String.equal candidate (session_id ^ ".jsonl")
+         || String.equal candidate (session_id ^ ".json")
+         || string_contains candidate session_id)
+
+let rec detail_candidate_paths root session_id =
+  if not (file_exists root) then []
+  else if not (path_is_directory root) then [ root ]
+  else
+    match list_dir root with
+    | Error (`Io_error _) -> []
+    | Ok entries ->
+        entries
+        |> List.concat_map (fun entry ->
+               let path = Filename.concat root entry in
+
+               if path_is_directory path then detail_candidate_paths path session_id
+               else if detail_name_matches session_id entry then [ path ]
+               else [])
+
+let read_detail_session source session_id path =
+  match read_file path with
+  | Error (`Io_error _) -> None
+  | Ok raw -> (
+      let module Adapter =
+        (val Sessy_adapter.adapter_for_tool source.tool : Sessy_adapter.SOURCE)
+      in
+
+      match Adapter.parse_detail raw with
+      | Ok detail when Session_id.equal detail.id session_id -> Some detail
+      | Ok _ | Error _ -> None)
+
+let merge_optional preferred fallback =
+  match preferred with
+  | Some _ -> preferred
+  | None -> fallback
+
+let merge_text preferred fallback =
+  if String.equal preferred "" then fallback else preferred
+
+let merge_session base detail =
+  {
+    base with
+    cwd = merge_text detail.cwd base.cwd;
+    title = merge_optional detail.title base.title;
+    first_prompt = merge_optional detail.first_prompt base.first_prompt;
+    project_key = merge_optional detail.project_key base.project_key;
+    model = merge_optional detail.model base.model;
+    updated_at = Float.max base.updated_at detail.updated_at;
+  }
+
+let hydrate_session_detail ~config session =
+  match lookup_source config session.tool with
+  | None -> session
+  | Some source ->
+      detail_roots source
+      |> List.find_map (fun root ->
+             root
+             |> detail_candidate_paths session.id
+             |> List.find_map (read_detail_session source session.id))
+      |> function
+      | Some detail -> merge_session session detail
+      | None -> session
+
+let launch_session ~cwd session =
+  if String.equal session.cwd "" then { session with cwd } else session
+
+let apply_launch_mode launch_mode launch =
+  match launch_mode with
+  | Sessy_ui.Default -> launch
+  | Sessy_ui.Dry_run -> { launch with exec_mode = Print }
+
+let prepare_launch_cmd ~config ~launch_mode ~cwd session =
+  let session = session |> hydrate_session_detail ~config |> launch_session ~cwd in
+
+  match lookup_launch config session.tool with
+  | Error _ as error -> error
+  | Ok launch ->
+      launch
+      |> Sessy_core.expand_template session None
+      |> Result.map (apply_launch_mode launch_mode)
+      |> Result.map_error config_error_message
+
+let repo_scope repo_root =
+  repo_root
+  |> Option.map (fun _ -> Repo)
+  |> Option.value ~default:Cwd
+
+let empty_query scope = { text = ""; scope; tool_filter = None; mode = Meta }
+
+let select_last_session ~config ~index ~cwd ~repo_root ~now =
+  let hydrated_index =
+    index
+    |> Sessy_index.all_sessions
+    |> List.map (hydrate_session_detail ~config)
+    |> Sessy_index.build
+  in
+  let primary_scope = repo_scope repo_root in
+  let primary_results =
+    hydrated_index
+    |> Sessy_index.search (empty_query primary_scope) ~now ~cwd ~repo_root
+    |> List.map (fun ranked -> ranked.session)
+  in
+
+  match primary_results with
+  | first :: _ -> Some first
+  | [] ->
+      hydrated_index
+      |> Sessy_index.search (empty_query All) ~now ~cwd ~repo_root
+      |> List.map (fun ranked -> ranked.session)
+      |> function
+      | first :: _ -> Some first
+      | [] -> None
+
+let resolve_index_session ~index session_id =
+  index
+  |> Sessy_index.find_by_id session_id
+  |> function
+  | Some session -> Ok session
+  | None -> Error (session_not_found_message session_id)
+
+let resolve_preview ~config ~index ~session_id ~cwd =
+  session_id
+  |> resolve_index_session ~index
+  |> Result.map (fun session ->
+         let detail_session = session |> hydrate_session_detail ~config in
+         let launch =
+           detail_session
+           |> launch_session ~cwd
+           |> prepare_launch_cmd ~config ~launch_mode:Sessy_ui.Default ~cwd
+         in
+
+         { Sessy_ui.session = detail_session; launch })
+
+let resolve_launch_cmd ~config ~index ~request ~launch_mode ~cwd ~repo_root ~now =
+  let selected_session =
+    match request with
+    | Last_request ->
+        select_last_session ~config ~index ~cwd ~repo_root ~now
+        |> function
+        | Some session -> Ok session
+        | None -> Error "no sessions available"
+    | Session_request session_id -> session_id |> resolve_index_session ~index
+  in
+
+  selected_session
+  |> Result.bind (prepare_launch_cmd ~config ~launch_mode ~cwd)
+
 type doctor_status = Ok_status | Warn_status
 type doctor_check = { status : doctor_status; label : string; detail : string }
 
@@ -167,17 +376,41 @@ let execute_launch command =
           prerr_endline message;
           1)
 
-let execute_cmd ~now ~config_paths ~config ~config_warnings = function
-  | Sessy_ui.Launch command -> command |> execute_launch
+let execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
+    ~config_warnings = function
   | Sessy_ui.Print_notice message ->
       message |> print_output;
       0
   | Sessy_ui.Print_sessions (sessions, output_format) ->
       sessions |> Sessy_ui.format_sessions ~now output_format |> print_output;
       0
-  | Sessy_ui.Print_preview preview ->
-      preview |> Sessy_ui.format_preview ~now |> print_output;
-      0
+  | Sessy_ui.Resolve_last launch_mode -> (
+      match
+        resolve_launch_cmd ~config ~index ~request:Last_request ~launch_mode ~cwd
+          ~repo_root ~now
+      with
+      | Ok command -> command |> execute_launch
+      | Error message ->
+          prerr_endline message;
+          1)
+  | Sessy_ui.Resolve_resume (session_id, launch_mode) -> (
+      match
+        resolve_launch_cmd ~config ~index
+          ~request:(Session_request session_id)
+          ~launch_mode ~cwd ~repo_root ~now
+      with
+      | Ok command -> command |> execute_launch
+      | Error message ->
+          prerr_endline message;
+          1)
+  | Sessy_ui.Resolve_preview session_id -> (
+      match resolve_preview ~config ~index ~session_id ~cwd with
+      | Ok preview ->
+          preview |> Sessy_ui.format_preview ~now |> print_output;
+          0
+      | Error message ->
+          prerr_endline message;
+          1)
   | Sessy_ui.Run_doctor ->
       doctor_report ~config_paths ~config ~config_warnings |> print_output;
       0
@@ -185,9 +418,12 @@ let execute_cmd ~now ~config_paths ~config ~config_warnings = function
       prerr_endline message;
       1
 
-let execute_cmds ~now ~config_paths ~config ~config_warnings commands =
+let execute_cmds ~index ~cwd ~repo_root ~now ~config_paths ~config
+    ~config_warnings commands =
   commands
-  |> List.map (execute_cmd ~now ~config_paths ~config ~config_warnings)
+  |> List.map
+       (execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
+          ~config_warnings)
   |> List.fold_left Int.max 0
 
 let commands_need_sessions = function
@@ -214,10 +450,12 @@ let run_once ~argv ~config_paths ~cwd ~now =
         print_warnings warnings;
 
         Sessy_ui.dispatch action index config ~cwd
-        |> execute_cmds ~now ~config_paths ~config ~config_warnings)
+        |> execute_cmds ~index ~cwd ~repo_root:(detect_git_root cwd) ~now
+             ~config_paths ~config ~config_warnings)
       else
         Sessy_ui.dispatch action Sessy_index.empty config ~cwd
-        |> execute_cmds ~now ~config_paths ~config ~config_warnings
+        |> execute_cmds ~index:Sessy_index.empty ~cwd ~repo_root:(detect_git_root cwd)
+             ~now ~config_paths ~config ~config_warnings
 
 let run () =
   let exit_status =
