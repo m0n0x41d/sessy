@@ -1,6 +1,7 @@
 open Sessy_domain
 
 let option_or_empty value = value |> Option.value ~default:""
+let profile_placeholder = "{{profile}}"
 
 let replace_literal ~pattern ~replacement value =
   let pattern_length = String.length pattern in
@@ -24,6 +25,19 @@ let replace_literal ~pattern ~replacement value =
   loop 0;
   Buffer.contents buffer
 
+let contains_literal ~pattern value =
+  let pattern_length = String.length pattern in
+  let value_length = String.length value in
+
+  let rec loop index =
+    if pattern_length = 0 then true
+    else if index + pattern_length > value_length then false
+    else if String.sub value index pattern_length = pattern then true
+    else loop (index + 1)
+  in
+
+  loop 0
+
 let session_placeholders session =
   [
     ("{{id}}", Session_id.to_string session.id);
@@ -41,10 +55,23 @@ let substitute_placeholder session value =
        value
 
 let substitute_profile profile value =
-  profile
-  |> Option.map (fun selected ->
-      value |> replace_literal ~pattern:"{{profile}}" ~replacement:selected.name)
-  |> Option.value ~default:value
+  match profile with
+  | Some selected ->
+      value
+      |> replace_literal ~pattern:profile_placeholder ~replacement:selected.name
+      |> Result.ok
+  | None ->
+      value
+      |> contains_literal ~pattern:profile_placeholder
+      |> function
+      | true ->
+          Error
+            (Invalid_value
+               ( "launch_template.argv_template",
+                 Printf.sprintf
+                   "template requires an active profile for %S"
+                   value ))
+      | false -> Ok value
 
 let append_profile_args profile argv =
   argv
@@ -57,6 +84,17 @@ let expand_arg session profile value =
   value
   |> substitute_placeholder session
   |> substitute_profile profile
+
+let collect_results items =
+  let collect accumulated current =
+    Result.bind accumulated (fun collected ->
+        current
+        |> Result.map (fun item -> item :: collected))
+  in
+
+  items
+  |> List.rev
+  |> List.fold_left collect (Ok [])
 
 let resolve_cwd (session : session) cwd_policy =
   match cwd_policy with `Session -> session.cwd | `Current -> "."
@@ -147,12 +185,15 @@ let expand_argv_template session profile argv_template =
   let expanded_tail =
     tail
     |> List.map (expand_arg session profile)
-    |> append_profile_args profile
+    |> collect_results
+    |> Result.map (append_profile_args profile)
   in
 
-  expanded_head
-  |> validate_program
-  |> Result.map (fun valid_head -> (valid_head, expanded_tail))
+  Result.bind expanded_head validate_program
+  |> fun validated_head ->
+  Result.bind validated_head (fun valid_head ->
+         expanded_tail
+         |> Result.map (fun valid_tail -> (valid_head, valid_tail)))
 
 let expand_template session profile template =
   profile
