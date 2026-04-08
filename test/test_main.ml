@@ -757,6 +757,10 @@ let test_cli_parse_dispatch_and_format () =
     Sessy_ui.dispatch (Sessy_ui.Preview_session cwd_session.id) index
       Sessy_core.default_config ~cwd:"/repo/worktree"
   in
+  let picker_commands =
+    Sessy_ui.dispatch Sessy_ui.Open_picker index Sessy_core.default_config
+      ~cwd:"/repo/worktree"
+  in
   let plain = Sessy_ui.format_session_plain ~now:120. cwd_session in
   let json = Sessy_ui.format_session_json cwd_session in
   let parsed_resume =
@@ -852,6 +856,11 @@ let test_cli_parse_dispatch_and_format () =
          ~cwd:"/repo/worktree"
      with
     | [ Sessy_ui.Run_doctor ] -> true
+    | _ -> false);
+  check bool "open picker stays a non-error placeholder" true
+    (match picker_commands with
+    | [ Sessy_ui.Print_notice message ] ->
+        String.equal "interactive mode is not implemented yet" message
     | _ -> false);
   check string "preview formatting shows launch preview"
     "id: abc12345zz\n\
@@ -1010,6 +1019,28 @@ let test_doctor_report () =
   check_contains "doctor includes tool checks" report "tool claude:";
   check_contains "doctor includes both tool checks" report "tool codex:"
 
+let test_shell_run_once_open_picker_is_success () =
+  let exit_status =
+    Sessy_shell.run_once ~argv:[] ~config_paths:[] ~cwd:"/tmp" ~now:0.
+  in
+
+  check int "bare sessy exits cleanly" 0 exit_status
+
+let test_shell_exec_replace_reports_errors () =
+  let command =
+    {
+      argv = ("sessy-command-that-does-not-exist", []);
+      cwd = "/tmp";
+      exec_mode = Exec;
+      display = "sessy-command-that-does-not-exist";
+    }
+  in
+
+  check bool "exec_replace returns structured exec error" true
+    (match Sessy_shell.exec_replace command with
+    | Error (`Exec_error _) -> true
+    | Ok () -> false)
+
 let test_e2e_fixture_pipeline () =
   let config = fixture_runtime_config () in
   let sessions, warnings = Sessy_shell.load_sessions config in
@@ -1117,6 +1148,10 @@ let () =
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
           test_case "doctor report" `Quick test_doctor_report;
+          test_case "bare sessy exits cleanly" `Quick
+            test_shell_run_once_open_picker_is_success;
+          test_case "exec_replace reports errors" `Quick
+            test_shell_exec_replace_reports_errors;
         ] );
       ("e2e", [ test_case "fixture pipeline" `Quick test_e2e_fixture_pipeline ]);
     ]

@@ -433,6 +433,7 @@ Parse argv manually (no external arg-parsing library needed for this surface). M
 
 **Do:** In `lib/ui/cli.ml`, add:
 - `val dispatch : cli_action -> Sessy_index.t -> config -> cwd:string -> cmd list`
+- For `Open_picker` → produce a non-error placeholder command until the TUI layer ships
 - For `List_sessions fmt` → produce `Print_sessions (sessions, fmt)` cmd
 - For `Preview_session id` → find session in index, produce `Print_preview session` cmd
 - For `Resume_id id` → find session, expand template, produce either `Launch launch_cmd` or `Print_error ...`
@@ -442,6 +443,7 @@ Parse argv manually (no external arg-parsing library needed for this surface). M
 **Invariants:**
 - Pure function. Returns `cmd list` (data), not effects.
 - Uses `Sessy_index.find_by_id`, `Sessy_core.expand_template`.
+- Bare `sessy` must not dispatch to an error exit before the picker exists.
 - Session not found → return `[Print_error "session not found: ..."]`, not crash.
 - Launch template expansion errors become user-facing `Print_error ...`, not crashes.
 
@@ -513,16 +515,16 @@ Parse argv manually (no external arg-parsing library needed for this surface). M
 
 **Do:** Create `lib/shell/process.ml`:
 - `val spawn : launch_cmd -> (unit, [`Exec_error of string]) result` — fork+exec child process
-- `val exec_replace : launch_cmd -> unit` — `Unix.execvp`, replaces current process
+- `val exec_replace : launch_cmd -> (unit, [`Exec_error of string]) result` — `Unix.execvp`, replaces current process on success
 - `val print_cmd : launch_cmd -> unit` — print command to stdout (dry-run)
 
 **Invariants:**
 - Layer 5. Side effects expected.
 - Build argv from `launch_cmd.argv` tuple: `let (head, tail) = cmd.argv in head :: tail`.
 - Change cwd to `launch_cmd.cwd` before exec.
-- `spawn` waits for child to exit. `exec_replace` never returns.
+- `spawn` waits for child to exit. `exec_replace` returns `Error (`Exec_error ...)` on OS/process failure instead of raising.
 
-**Accept:** `print_cmd` outputs the expected command string. `spawn` with `echo hello` works. `exec_replace` tested manually (replaces process).
+**Accept:** `print_cmd` outputs the expected command string. `spawn` with `echo hello` works. `exec_replace` reports an invalid executable or cwd as `Error (`Exec_error ...)`.
 
 **Depends:** T1.4
 

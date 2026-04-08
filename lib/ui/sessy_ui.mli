@@ -16,6 +16,7 @@ type preview = {
 
 type cmd =
   | Launch of Sessy_domain.launch_cmd
+  | Print_notice of string
   | Print_sessions of Sessy_domain.session list * output_format
   | Print_preview of preview
   | Run_doctor

@@ -15,6 +15,7 @@ type preview = { session : session; launch : (launch_cmd, string) result }
 
 type cmd =
   | Launch of launch_cmd
+  | Print_notice of string
   | Print_sessions of session list * output_format
   | Print_preview of preview
   | Run_doctor
@@ -159,7 +160,7 @@ let session_not_found_message session_id =
 
 let dispatch action index config ~cwd =
   match action with
-  | Open_picker -> [ Print_error "interactive mode is not implemented yet" ]
+  | Open_picker -> [ Print_notice "interactive mode is not implemented yet" ]
   | List_sessions output_format ->
       [ Print_sessions (Sessy_index.all_sessions index, output_format) ]
   | Resume_last launch_mode -> (

@@ -42,8 +42,11 @@ let exec_replace command =
   let head, _ = command.argv in
   let argv = argv_array command in
 
-  try with_cwd command.cwd (fun () -> Unix.execvp head argv)
+  try
+    with_cwd command.cwd (fun () ->
+        let[@warning "-21"] () = Unix.execvp head argv in
+        Ok ())
   with Unix.Unix_error (error, function_name, argument) ->
-    failwith (describe_unix_error error function_name argument)
+    exec_error (describe_unix_error error function_name argument)
 
 let print_cmd command = print_endline command.display

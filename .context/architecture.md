@@ -504,7 +504,7 @@ val expand_home : string -> string
 
 (** Process execution *)
 val spawn : launch_cmd -> (unit, [`Exec_error of string]) result
-val exec_replace : launch_cmd -> never  (* replaces current process *)
+val exec_replace : launch_cmd -> (unit, [`Exec_error of string]) result
 val print_cmd : launch_cmd -> unit      (* dry-run: print command *)
 
 (** Environment *)
@@ -539,7 +539,7 @@ run () =
 
   (* 4. Parse CLI args and dispatch *)
   match Ui.parse_cli (Array.to_list Sys.argv) with
-  | Ok (Open_picker) -> run_tui index config
+  | Ok (Open_picker) -> print_notice "interactive mode is not implemented yet"
   | Ok (List_sessions fmt) -> print_sessions index fmt
   | Ok (Resume_id id) -> exec_resume index config id
   | ...

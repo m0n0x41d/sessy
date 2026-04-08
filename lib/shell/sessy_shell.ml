@@ -161,15 +161,17 @@ let execute_launch command =
           prerr_endline message;
           1)
   | Exec -> (
-      try
-        let[@warning "-21"] () = exec_replace command in
-        0
-      with Failure message ->
-        prerr_endline message;
-        1)
+      match exec_replace command with
+      | Ok () -> 0
+      | Error (`Exec_error message) ->
+          prerr_endline message;
+          1)
 
 let execute_cmd ~now ~config_paths ~config ~config_warnings = function
   | Sessy_ui.Launch command -> command |> execute_launch
+  | Sessy_ui.Print_notice message ->
+      message |> print_output;
+      0
   | Sessy_ui.Print_sessions (sessions, output_format) ->
       sessions |> Sessy_ui.format_sessions ~now output_format |> print_output;
       0
@@ -188,20 +190,14 @@ let execute_cmds ~now ~config_paths ~config ~config_warnings commands =
   |> List.map (execute_cmd ~now ~config_paths ~config ~config_warnings)
   |> List.fold_left Int.max 0
 
-let cli_argv () = Sys.argv |> Array.to_list |> List.tl
-
 let commands_need_sessions = function
   | Sessy_ui.Doctor | Sessy_ui.Open_picker -> false
   | Sessy_ui.List_sessions _ | Sessy_ui.Resume_last _ | Sessy_ui.Resume_id _
   | Sessy_ui.Preview_session _ ->
       true
 
-let run_once () =
-  let config_paths = Config_loader.default_paths () in
-  let cwd = Sys.getcwd () in
-  let now = Unix.gettimeofday () in
-
-  cli_argv () |> Sessy_ui.parse_cli |> function
+let run_once ~argv ~config_paths ~cwd ~now =
+  argv |> Sessy_ui.parse_cli |> function
   | Error message ->
       prerr_endline message;
       1
@@ -224,6 +220,12 @@ let run_once () =
         |> execute_cmds ~now ~config_paths ~config ~config_warnings
 
 let run () =
-  let exit_status = Eio_main.run (fun _env -> run_once ()) in
+  let exit_status =
+    Eio_main.run (fun _env ->
+        run_once
+          ~argv:(Sys.argv |> Array.to_list |> List.tl)
+          ~config_paths:(Config_loader.default_paths ())
+          ~cwd:(Sys.getcwd ()) ~now:(Unix.gettimeofday ()))
+  in
 
   exit exit_status
