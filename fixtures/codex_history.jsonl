@@ -1,0 +1,6 @@
+{"session_id":"01999f1e-084e-77d3-9b2d-5a2692a779d5","ts":1759311173,"text":"Generate an OCaml project scaffold for sessy with dune, opam, and fixture directories."}
+{"session_id":"01999f1e-084e-77d3-9b2d-5a2692a779d5","ts":1759311449,"text":"Inspect the current repository tree and explain what is missing for the first vertical slice."}
+{"session_id":"01999f2d-218d-7611-b845-b944d72e6074","ts":1759312170,"text":"Commit the scaffold once dune build, dune exec, and fixture sanity checks all pass."}
+{"session_id":"01999f57-205b-7863-a59f-980a5917273a","ts":1759316111,"text":"Compare the live Claude and Codex history formats before you write any adapter code."}
+{"session_id":"0199a05b-daf5-7251-825f-cbc826def3d6","ts":1759336798,"text":"Document the observed JSONL field names and keep the fixtures sanitized."}
+{"session_id":"019b1c3a-6e10-7d01-acab-14f46c84be7f","ts":1765729149,"text":"Prepare a dry-run launch command pipeline for sessy resume once the domain types exist."}

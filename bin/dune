@@ -1,0 +1,4 @@
+(executable
+ (name main)
+ (public_name sessy)
+ (libraries sessy_shell))

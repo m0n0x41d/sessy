@@ -1,0 +1,4 @@
+(library
+ (name sessy_core)
+ (public_name sessy.core)
+ (libraries sessy_domain))

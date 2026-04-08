@@ -60,12 +60,15 @@ For every step below:
 - Use the `h-reason` skill for non-mechanical decisions, especially boundary choices, data-format mapping, runtime integration, and packaging trade-offs.
 - Keep unit tests inside the same step as the implementation they verify.
 
-### [ ] Step: Foundation scaffold and live-format validation
+### [x] Step: Foundation scaffold and live-format validation
+<!-- chat-id: 23c89a1d-8362-458a-8b0c-a0cd51c8c3aa -->
 
 - Scope: T0.1-T0.4 from `.context/implementation-plan.md`.
 - Do: create `.ocamlformat`, `dune-project`, `sessy.opam`, the initial dune directory structure, stub libraries, and `.gitignore`; verify the OCaml toolchain and install dependencies; inspect live Claude and Codex files and create sanitized fixtures.
 - Invariants: no production logic before the scaffold exists; dune dependencies must match the architecture; fixture formats must be evidence-based, not guessed.
 - Verify: `ocaml --version`, `dune --version`, `opam install . --deps-only`, `dune build`, and fixture parse sanity checks.
+- Evidence: live history inspection confirmed Claude history currently uses `display`/`project`/`timestamp`/`sessionId?` and Codex history uses `session_id`/`ts`/`text`; sanitized fixtures were created from those observed shapes.
+- Evidence: `minttea 0.0.2` is not solvable on the local OCaml 5.4.1 environment because it pins `riot 0.0.5` (`ocaml < 5.3`), so the foundation scaffold omits the TUI runtime dependency and defers that package choice to the later TUI step.
 
 ### [ ] Step: Domain kernel
 

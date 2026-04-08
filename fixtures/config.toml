@@ -1,0 +1,30 @@
+[ui]
+scope = "repo"
+preview = true
+
+[sources.claude]
+history = "~/.claude/history.jsonl"
+projects = "~/.claude/projects"
+sessions = "~/.claude/sessions"
+
+[sources.codex]
+history = "~/.codex/history.jsonl"
+sessions = "~/.codex/sessions"
+
+[launch.claude]
+argv = ["claude", "--resume", "{{id}}"]
+cwd_policy = "session"
+exec_mode = "spawn"
+
+[launch.codex]
+argv = ["codex", "resume", "{{id}}"]
+cwd_policy = "session"
+exec_mode = "spawn"
+
+[profiles.claude.unsafe]
+extends = "claude"
+argv_append = ["--dangerously-skip-permissions"]
+
+[profiles.codex.fast]
+extends = "codex"
+argv_append = ["--profile", "fast"]

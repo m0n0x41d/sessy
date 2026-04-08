@@ -1,0 +1,3 @@
+(library
+ (name sessy_domain)
+ (public_name sessy.domain))
