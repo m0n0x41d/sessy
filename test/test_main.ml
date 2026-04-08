@@ -95,6 +95,40 @@ let fixture_path name =
 let read_fixture name =
   In_channel.with_open_bin (fixture_path name) In_channel.input_all
 
+let with_temp_file contents run =
+  let path = Filename.temp_file "sessy-config-" ".toml" in
+
+  Out_channel.with_open_bin path (fun channel ->
+      output_string channel contents);
+
+  Fun.protect ~finally:(fun () -> Sys.remove path) (fun () -> run path)
+
+let with_env_value name value run =
+  let original = Sys.getenv_opt name in
+
+  Unix.putenv name value;
+
+  let restore () =
+    match original with
+    | Some original -> Unix.putenv name original
+    | None -> Unix.putenv name ""
+  in
+
+  Fun.protect ~finally:restore run
+
+let contains_substring ~needle haystack =
+  let needle_length = String.length needle in
+  let haystack_length = String.length haystack in
+
+  let rec loop index =
+    if needle_length = 0 then true
+    else if index + needle_length > haystack_length then false
+    else if String.sub haystack index needle_length = needle then true
+    else loop (index + 1)
+  in
+
+  loop 0
+
 let lookup_launch config tool =
   config.launches
   |> List.find_map (fun (candidate, launch) ->
@@ -764,6 +798,65 @@ let test_shell_fs_and_config_loader () =
     [ "--dangerously-skip-permissions" ]
     unsafe_profile.argv_append
 
+let test_shell_fs_preserves_tilde_without_home () =
+  with_env_value "HOME" "" (fun () ->
+      check string "tilde path stays unchanged without HOME"
+        "~/.claude/history.jsonl"
+        (Sessy_shell.expand_home "~/.claude/history.jsonl"))
+
+let test_shell_config_loader_invalid_types_fall_back () =
+  let raw =
+    {|
+[ui]
+preview = "yes"
+
+[sources.claude]
+history = false
+
+[launch.claude]
+argv = "claude --resume {{id}}"
+
+[profiles.claude.unsafe]
+argv_append = "skip"
+|}
+  in
+
+  with_temp_file raw (fun path ->
+      let config, warnings = Sessy_shell.load_config_from_paths [ path ] in
+      let claude_source =
+        config.sources
+        |> List.find_opt (fun source -> Tool.equal source.tool Claude)
+        |> require_some "expected Claude source"
+      in
+      let claude_launch = lookup_launch config Claude in
+      let unsafe_profile =
+        config.profiles
+        |> List.find_opt (fun profile ->
+               Tool.equal profile.base_tool Claude
+               && String.equal profile.name "unsafe")
+        |> require_some "expected unsafe Claude profile"
+      in
+
+      check bool "preview falls back to default" true config.preview;
+      check string "history path falls back to default"
+        "~/.claude/history.jsonl"
+        claude_source.history_path;
+      check
+        (pair string (list string))
+        "launch argv falls back to default"
+        ("claude", [ "--resume"; "{{id}}" ])
+        claude_launch.argv_template;
+      check (list string) "profile args fall back to empty list" []
+        unsafe_profile.argv_append;
+      check bool "invalid preview warning recorded" true
+        (warnings
+        |> List.exists
+             (contains_substring ~needle:"ui.preview"));
+      check bool "invalid launch argv warning recorded" true
+        (warnings
+        |> List.exists
+             (contains_substring ~needle:"launch.claude.argv")))
+
 let test_shell_load_sessions_is_tolerant () =
   let config =
     {
@@ -896,6 +989,10 @@ let () =
         [
           test_case "filesystem and config loader" `Quick
             test_shell_fs_and_config_loader;
+          test_case "expand_home keeps tilde without HOME" `Quick
+            test_shell_fs_preserves_tilde_without_home;
+          test_case "invalid config types fall back with warnings" `Quick
+            test_shell_config_loader_invalid_types_fall_back;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
         ] );

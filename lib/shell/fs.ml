@@ -16,11 +16,17 @@ let list_dir path =
 let file_exists path = Sys.file_exists path
 
 let expand_home path =
-  let home = Sys.getenv_opt "HOME" |> Option.value ~default:"" in
+  let home =
+    match Sys.getenv_opt "HOME" with
+    | Some value when not (String.equal value "") -> Some value
+    | Some _ | None -> None
+  in
 
-  if String.equal path "~" then home
+  if String.equal path "~" then home |> Option.value ~default:path
   else if String.starts_with ~prefix:"~/" path then
-    home ^ String.sub path 1 (String.length path - 1)
+    home
+    |> Option.map (fun value -> value ^ String.sub path 1 (String.length path - 1))
+    |> Option.value ~default:path
   else path
 
 let rec detect_git_root path =
