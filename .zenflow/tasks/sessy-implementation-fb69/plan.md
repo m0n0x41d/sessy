@@ -102,12 +102,18 @@ For every step below:
 - Evidence: live detail inspection confirmed Claude transcript lines carry top-level `sessionId`/`cwd`/`timestamp` with nested `message.content`, while Codex transcript lines use top-level `timestamp` and nested `payload.id`/`payload.cwd`/`payload.content`.
 - Evidence: `dune build` and `dune test` both pass with fixture-backed coverage for history parsing, malformed-line skipping, detail hydration, and adapter dispatch.
 
-### [ ] Step: Index and first CLI vertical slice
+### [x] Step: Index and first CLI vertical slice
+<!-- chat-id: d030d253-2428-43d6-b136-4d97c340cfea -->
 
 - Scope: T4.1-T5.8.
 - Do: implement the immutable index; add CLI action parsing and dispatch for the initial read path; add shell filesystem/config/process wrappers; wire `main` so `sessy list --json` works end-to-end; add the first E2E pipeline test.
 - Invariants: the index coordinates core behavior rather than re-implementing it; shell code is thin and contains all effects; one broken source must not block the other.
 - Verify: `dune test`, `dune exec sessy -- list --json`, and the first E2E fixture pipeline.
+- Evidence: `lib/index/sessy_index.ml` and `lib/index/sessy_index.mli` now provide immutable build/search/find/refresh behavior with dedup-by-id and Layer 1 ranking coordination.
+- Evidence: `lib/ui/sessy_ui.ml` and `lib/ui/sessy_ui.mli` now provide the initial pure CLI read-path surface for `sessy` and `sessy list --json`, plus plain/JSON formatting.
+- Evidence: `lib/shell/` now contains thin filesystem, config-loader, and process wrappers; `Sessy_shell.run` loads config, tolerantly loads source histories, builds the index, parses CLI args, and executes read-path commands.
+- Evidence: `test/test_main.ml` now covers index semantics, CLI parsing/dispatch/formatting, shell config/source loading, and a fixture-backed E2E pipeline from source files to JSON output and launch expansion.
+- Runtime evidence: `dune build`, `dune test`, and `dune exec sessy -- list --json` all succeed on the current machine.
 
 ### [ ] Step: CLI resume, preview, and diagnostics
 

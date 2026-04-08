@@ -1,4 +1,4 @@
 (library
  (name sessy_ui)
  (public_name sessy.ui)
- (libraries sessy_domain sessy_core sessy_index))
+ (libraries sessy_domain sessy_core sessy_index yojson))

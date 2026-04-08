@@ -39,6 +39,11 @@ let check_ranked_ids label expected ranked_sessions =
 let check_session_ids label expected sessions =
   check (list string) label expected (session_ids sessions)
 
+let check_ranked_session_ids label expected ranked_sessions =
+  ranked_sessions
+  |> List.map (fun ranked -> ranked.session)
+  |> check_session_ids label expected
+
 let require_ranked label session_id ranked_sessions =
   ranked_sessions
   |> List.find_opt (fun ranked ->
@@ -89,6 +94,32 @@ let fixture_path name =
 
 let read_fixture name =
   In_channel.with_open_bin (fixture_path name) In_channel.input_all
+
+let lookup_launch config tool =
+  config.launches
+  |> List.find_map (fun (candidate, launch) ->
+         if Tool.equal candidate tool then Some launch else None)
+  |> require_some "expected launch template"
+
+let fixture_runtime_config () =
+  {
+    Sessy_core.default_config with
+    sources =
+      [
+        {
+          tool = Claude;
+          history_path = fixture_path "claude_history.jsonl";
+          projects_path = Some (fixture_path "claude_detail.jsonl");
+          sessions_path = Some (fixture_path "claude_detail.jsonl");
+        };
+        {
+          tool = Codex;
+          history_path = fixture_path "codex_history.jsonl";
+          projects_path = None;
+          sessions_path = Some (fixture_path "codex_detail.jsonl");
+        };
+      ];
+  }
 
 let test_session_id_validation () =
   check bool "empty id rejected" false
@@ -617,6 +648,203 @@ let test_adapter_dispatch () =
   check bool "Codex dispatch" true (Tool.equal Codex Codex_adapter.tool);
   check int "all adapters exposed" 2 (List.length Sessy_adapter.all_adapters)
 
+let test_index_build_search_and_refresh () =
+  let original_sessions =
+    [
+      make_session ~cwd:"/repo" ~updated_at:100. "dup-1";
+      make_session ~cwd:"/repo" ~updated_at:200. "dup-1";
+      make_session ~cwd:"/repo/lib" ~updated_at:150. "repo-1";
+      make_session ~cwd:"/elsewhere" ~updated_at:300. "other-1";
+    ]
+  in
+  let index = Sessy_index.build original_sessions in
+  let query = { text = ""; scope = Repo; tool_filter = None; mode = Meta } in
+  let refreshed =
+    Sessy_index.refresh index
+      [ make_session ~cwd:"/repo/fresh" ~updated_at:400. "fresh-1" ]
+  in
+  let duplicate =
+    Sessy_index.find_by_id index (require_session_id "dup-1")
+    |> require_some "expected deduplicated session"
+  in
+  let ranked =
+    Sessy_index.search index query ~now:500. ~cwd:"/repo"
+      ~repo_root:(Some "/repo")
+  in
+
+  check int "deduplicated index count" 3 (Sessy_index.count index);
+  check_session_ids "all sessions keep recency order"
+    [ "other-1"; "dup-1"; "repo-1" ]
+    (Sessy_index.all_sessions index);
+  check (float 0.000_001) "most recent duplicate kept" 200. duplicate.updated_at;
+  check_ranked_session_ids "search coordinates scope filter and ranking"
+    [ "dup-1"; "repo-1" ]
+    ranked;
+  check int "refresh replaces contents" 1 (Sessy_index.count refreshed);
+  check_session_ids "refresh keeps only new contents" [ "fresh-1" ]
+    (Sessy_index.all_sessions refreshed)
+
+let test_cli_parse_dispatch_and_format () =
+  let session =
+    make_session ~updated_at:60. ~title:"Fix ranking" ~cwd:"/repo/worktree"
+      "abc12345zz"
+  in
+  let index = Sessy_index.build [ session ] in
+  let commands =
+    Sessy_ui.dispatch (Sessy_ui.List_sessions Sessy_ui.Json) index
+      Sessy_core.default_config ~cwd:"/repo/worktree"
+  in
+  let plain = Sessy_ui.format_session_plain ~now:120. session in
+  let json = Sessy_ui.format_session_json session in
+
+  check bool "default cli action opens picker" true
+    (match Sessy_ui.parse_cli [] with
+    | Ok Sessy_ui.Open_picker -> true
+    | Ok (Sessy_ui.List_sessions _) | Error _ -> false);
+  check bool "list parses to plain output" true
+    (match Sessy_ui.parse_cli [ "list" ] with
+    | Ok (Sessy_ui.List_sessions Sessy_ui.Plain) -> true
+    | Ok Sessy_ui.Open_picker
+    | Ok (Sessy_ui.List_sessions Sessy_ui.Json)
+    | Error _ -> false);
+  check bool "list --json parses to json output" true
+    (match Sessy_ui.parse_cli [ "list"; "--json" ] with
+    | Ok (Sessy_ui.List_sessions Sessy_ui.Json) -> true
+    | Ok Sessy_ui.Open_picker
+    | Ok (Sessy_ui.List_sessions Sessy_ui.Plain)
+    | Error _ -> false);
+  check bool "unknown commands stay errors" true
+    (match Sessy_ui.parse_cli [ "status" ] with
+    | Error _ -> true
+    | Ok _ -> false);
+  check bool "list dispatch prints sessions" true
+    (match commands with
+    | [ Sessy_ui.Print_sessions (sessions, Sessy_ui.Json) ] ->
+        session_ids sessions = [ "abc12345zz" ]
+    | _ -> false);
+  check string "plain formatting includes short id and age"
+    "[claude] abc12345 Fix ranking /repo/worktree 1m ago"
+    plain;
+  check string "json formatting includes id"
+    "abc12345zz"
+    (match json with
+    | `Assoc fields -> (
+        match List.assoc_opt "id" fields with
+        | Some (`String value) -> value
+        | Some _ | None -> fail "expected id field")
+    | _ -> fail "expected session json object")
+
+let test_shell_fs_and_config_loader () =
+  let raw =
+    fixture_path "claude_history.jsonl"
+    |> Sessy_shell.read_file
+    |> require_ok "expected fixture file to be readable"
+  in
+  let home = Sys.getenv "HOME" in
+  let config, warnings =
+    Sessy_shell.load_config_from_paths [ fixture_path "config.toml" ]
+  in
+  let unsafe_profile =
+    config.profiles
+    |> List.find_opt (fun profile ->
+           Tool.equal profile.base_tool Claude
+           && String.equal profile.name "unsafe")
+    |> require_some "expected unsafe Claude profile"
+  in
+
+  check bool "fixture file is non-empty" true (String.length raw > 0);
+  check string "home expansion preserves suffix"
+    (home ^ "/.claude")
+    (Sessy_shell.expand_home "~/.claude");
+  check int "valid fixture config has no warnings" 0 (List.length warnings);
+  check bool "fixture config keeps preview enabled" true config.preview;
+  check int "fixture config loads two sources" 2 (List.length config.sources);
+  check int "fixture config loads two profiles" 2 (List.length config.profiles);
+  check (list string) "Claude unsafe profile args"
+    [ "--dangerously-skip-permissions" ]
+    unsafe_profile.argv_append
+
+let test_shell_load_sessions_is_tolerant () =
+  let config =
+    {
+      (fixture_runtime_config ()) with
+      sources =
+        [
+          {
+            tool = Claude;
+            history_path = fixture_path "config.toml";
+            projects_path = None;
+            sessions_path = None;
+          };
+          {
+            tool = Codex;
+            history_path = fixture_path "codex_history.jsonl";
+            projects_path = None;
+            sessions_path = None;
+          };
+        ];
+    }
+  in
+  let sessions, warnings = Sessy_shell.load_sessions config in
+
+  check bool "one bad source emits a warning" true (List.length warnings > 0);
+  check bool "the good source still contributes sessions" true
+    (sessions
+    |> List.exists (fun (session : session) -> Tool.equal session.tool Codex))
+
+let test_e2e_fixture_pipeline () =
+  let config = fixture_runtime_config () in
+  let sessions, warnings = Sessy_shell.load_sessions config in
+  let index = Sessy_index.build sessions in
+  let query = { text = ""; scope = All; tool_filter = None; mode = Meta } in
+  let ranked =
+    Sessy_index.search index query ~now:1_900_000_000.
+      ~cwd:"/Users/example/Repos/projects/sessy"
+      ~repo_root:(Some "/Users/example/Repos/projects/sessy")
+  in
+  let selected =
+    ranked
+    |> List.hd
+    |> fun ranked -> ranked.session
+  in
+  let launch =
+    Sessy_core.expand_template selected None (lookup_launch config selected.tool)
+    |> require_ok "expected launch expansion from fixture result"
+  in
+  let json_output =
+    match Sessy_ui.parse_cli [ "list"; "--json" ] with
+    | Error message -> fail message
+    | Ok action -> (
+        match
+          Sessy_ui.dispatch action index config
+            ~cwd:"/Users/example/Repos/projects/sessy"
+        with
+        | [ Sessy_ui.Print_sessions (sessions, output_format) ] ->
+            Sessy_ui.format_sessions ~now:1_900_000_000. output_format sessions
+        | _ -> fail "expected a printable session list")
+  in
+
+  check int "fixture load yields no warnings" 0 (List.length warnings);
+  check int "fixture pipeline deduplicates to nine sessions" 9
+    (Sessy_index.count index);
+  check_ranked_session_ids "repo-local sessions rank first in e2e search"
+    [
+      "2f10b8a3-c44c-4cc2-b2f9-48d2541e8b1a";
+      "d7bdb0a1-4d0c-46cb-9e8d-6af40aa8fd9f";
+      "414afc11-2e5d-43c2-bdcb-02842e4686ec";
+    ]
+    (ranked |> List.filteri (fun index _ -> index < 3));
+  check
+    (pair string (list string))
+    "launch template expands for selected fixture session"
+    ( "claude",
+      [ "--resume"; "2f10b8a3-c44c-4cc2-b2f9-48d2541e8b1a" ] )
+    launch.argv;
+  check int "json output contains every indexed session" 9
+    (match Yojson.Safe.from_string json_output with
+    | `List values -> List.length values
+    | _ -> fail "expected json array output")
+
 let () =
   run "sessy"
     [
@@ -653,5 +881,26 @@ let () =
             test_codex_history_adapter_skips_malformed_lines;
           test_case "Codex detail parsing" `Quick test_codex_detail_adapter;
           test_case "adapter dispatch" `Quick test_adapter_dispatch;
+        ] );
+      ( "index",
+        [
+          test_case "build search and refresh" `Quick
+            test_index_build_search_and_refresh;
+        ] );
+      ( "ui",
+        [
+          test_case "cli parse dispatch and format" `Quick
+            test_cli_parse_dispatch_and_format;
+        ] );
+      ( "shell",
+        [
+          test_case "filesystem and config loader" `Quick
+            test_shell_fs_and_config_loader;
+          test_case "source loading stays tolerant" `Quick
+            test_shell_load_sessions_is_tolerant;
+        ] );
+      ( "e2e",
+        [
+          test_case "fixture pipeline" `Quick test_e2e_fixture_pipeline;
         ] );
     ]
