@@ -36,6 +36,7 @@ let default_config =
   {
     default_scope = Repo;
     preview = true;
+    selected_profile = None;
     sources = default_sources;
     launches = default_launches;
     profiles = [];
@@ -47,6 +48,7 @@ let merge_config base override =
   {
     default_scope = override.default_scope;
     preview = override.preview;
+    selected_profile = override.selected_profile;
     sources = merge_list base.sources override.sources;
     launches = merge_list base.launches override.launches;
     profiles = merge_list base.profiles override.profiles;

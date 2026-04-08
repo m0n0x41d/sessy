@@ -288,6 +288,7 @@ If a launch template references `{{profile}}`, sessy must either expand it from 
 mode = "tui"
 scope = "repo"
 preview = true
+profile = "fast"
 
 [sources.claude]
 history = "~/.claude/history.jsonl"
@@ -369,7 +370,7 @@ Claude уже поддерживает `--continue`, `--resume`, session names, 
 1. built-in defaults
 2. user config
 3. project config
-4. selected profile
+4. selected profile (`[ui].profile`)
 5. CLI flags
 
 ---

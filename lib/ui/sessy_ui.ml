@@ -127,12 +127,30 @@ let lookup_launch (config : config) tool =
       |> Printf.sprintf "missing launch template for %s"
       |> Result.error
 
-let launch_for_session (config : config) (session : session) =
+let selected_profile_name config active_profile =
+  match active_profile with
+  | Some _ as profile_name -> profile_name
+  | None -> config.selected_profile
+
+let lookup_profile (config : config) active_profile tool =
+  Option.bind
+    (selected_profile_name config active_profile)
+    (fun profile_name ->
+      config.profiles
+      |> List.find_opt (fun profile ->
+             String.equal profile.name profile_name
+             && Tool.equal profile.base_tool tool))
+
+let launch_for_session (config : config) active_profile (session : session) =
   match lookup_launch config session.tool with
   | Error _ as error -> error
   | Ok launch ->
+      let profile =
+        session.tool |> lookup_profile config active_profile
+      in
+
       launch
-      |> Sessy_core.expand_template session None
+      |> Sessy_core.expand_template session profile
       |> Result.map_error config_error_message
 
 let apply_launch_mode launch_mode launch =
@@ -140,8 +158,8 @@ let apply_launch_mode launch_mode launch =
   | Default -> launch
   | Dry_run -> { launch with exec_mode = Print }
 
-let prepare_launch launch_mode config session =
-  session |> launch_for_session config
+let prepare_launch launch_mode config active_profile session =
+  session |> launch_for_session config active_profile
   |> Result.map (apply_launch_mode launch_mode)
 
 let select_last_session index ~cwd =
@@ -167,21 +185,21 @@ let dispatch action index config ~cwd =
       match select_last_session index ~cwd with
       | None -> [ Print_error "no sessions available" ]
       | Some session -> (
-          match prepare_launch launch_mode config session with
+          match prepare_launch launch_mode config None session with
           | Ok launch -> [ Launch launch ]
           | Error message -> [ Print_error message ]))
   | Resume_id (session_id, launch_mode) -> (
       match Sessy_index.find_by_id index session_id with
       | None -> [ Print_error (session_not_found_message session_id) ]
       | Some session -> (
-          match prepare_launch launch_mode config session with
+          match prepare_launch launch_mode config None session with
           | Ok launch -> [ Launch launch ]
           | Error message -> [ Print_error message ]))
   | Preview_session session_id -> (
       match Sessy_index.find_by_id index session_id with
       | None -> [ Print_error (session_not_found_message session_id) ]
       | Some session ->
-          let launch = session |> launch_for_session config in
+          let launch = session |> launch_for_session config None in
 
           [ Print_preview { session; launch } ])
   | Doctor -> [ Run_doctor ]

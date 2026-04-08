@@ -134,7 +134,7 @@ Every task lists:
 - `type launch_template` (`argv_template` as `string * string list`, cwd_policy, default_exec_mode)
 - `type profile` (name, base_tool, argv_append, exec_mode_override)
 - `type source_config` (tool, history_path, projects_path, sessions_path)
-- `type config` (default_scope, preview, sources, launches, profiles)
+- `type config` (default_scope, preview, selected_profile, sources, launches, profiles)
 
 **Invariants:**
 - `launch_cmd.argv` is `string * string list` — tuple guarantees non-empty by construction. No runtime check needed.

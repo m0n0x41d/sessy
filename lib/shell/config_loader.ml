@@ -113,8 +113,13 @@ let update_ui path base toml warnings =
   let preview, warnings =
     toml |> keep_bool path [ "ui"; "preview" ] base.preview warnings
   in
+  let selected_profile, warnings =
+    toml
+    |> keep_optional_string path [ "ui"; "profile" ] base.selected_profile
+         warnings
+  in
 
-  ({ base with default_scope; preview }, warnings)
+  ({ base with default_scope; preview; selected_profile }, warnings)
 
 let update_sources path base toml warnings =
   default_tool_order

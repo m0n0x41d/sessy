@@ -212,6 +212,7 @@ let test_domain_record_construction () =
     {
       default_scope = Repo;
       preview = true;
+      selected_profile = Some "fast";
       sources =
         [
           {
@@ -255,6 +256,7 @@ let test_default_config_and_merge () =
     {
       default_scope = All;
       preview = false;
+      selected_profile = Some "unsafe";
       sources =
         [
           {
@@ -288,6 +290,8 @@ let test_default_config_and_merge () =
   let resolved = Sessy_core.resolve_config [ user_override ] in
 
   check bool "default preview enabled" true default_config.preview;
+  check (option string) "default selected profile is empty" None
+    default_config.selected_profile;
   check int "two default sources" 2 (List.length default_config.sources);
   check int "two default launch templates" 2
     (List.length default_config.launches);
@@ -300,6 +304,8 @@ let test_default_config_and_merge () =
   check int "override source count" 1 (List.length resolved.sources);
   check int "override profile count" 1 (List.length resolved.profiles);
   check bool "override preview applied" false resolved.preview;
+  check (option string) "override selected profile applied"
+    (Some "unsafe") resolved.selected_profile;
 
   match resolved.default_scope with
   | All -> ()
@@ -926,6 +932,7 @@ let test_shell_config_loader_invalid_types_fall_back () =
     {|
 [ui]
 preview = "yes"
+profile = false
 
 [sources.claude]
 history = false
@@ -964,11 +971,34 @@ argv_append = "skip"
         claude_launch.argv_template;
       check (list string) "profile args fall back to empty list" []
         unsafe_profile.argv_append;
+      check (option string) "invalid selected profile falls back to default" None
+        config.selected_profile;
       check bool "invalid preview warning recorded" true
         (warnings |> List.exists (contains_substring ~needle:"ui.preview"));
+      check bool "invalid selected profile warning recorded" true
+        (warnings |> List.exists (contains_substring ~needle:"ui.profile"));
       check bool "invalid launch argv warning recorded" true
         (warnings
         |> List.exists (contains_substring ~needle:"launch.claude.argv")))
+
+let test_shell_config_loader_reads_selected_profile () =
+  let raw =
+    {|
+[ui]
+profile = "fast"
+
+[profiles.codex.fast]
+argv_append = ["--profile", "fast"]
+|}
+  in
+
+  with_temp_file raw (fun path ->
+      let config, warnings = Sessy_shell.load_config_from_paths [ path ] in
+
+      check (option string) "selected profile loaded from ui.profile"
+        (Some "fast") config.selected_profile;
+      check int "valid selected profile config has no warnings" 0
+        (List.length warnings))
 
 let test_shell_load_sessions_is_tolerant () =
   let config =
@@ -997,6 +1027,37 @@ let test_shell_load_sessions_is_tolerant () =
   check bool "the good source still contributes sessions" true
     (sessions
     |> List.exists (fun (session : session) -> Tool.equal session.tool Codex))
+
+let test_shell_dry_run_uses_selected_profile () =
+  let session = make_session ~tool:Codex ~cwd:"/repo/worktree" "codex-fast-1" in
+  let config =
+    {
+      Sessy_core.default_config with
+      selected_profile = Some "fast";
+      profiles =
+        [
+          {
+            name = "fast";
+            base_tool = Codex;
+            argv_append = [ "--profile"; "fast" ];
+            exec_mode_override = None;
+          };
+        ];
+    }
+  in
+  let commands =
+    Sessy_ui.dispatch
+      (Sessy_ui.Resume_id (session.id, Sessy_ui.Dry_run))
+      (Sessy_index.build [ session ])
+      config ~cwd:"/repo/worktree"
+  in
+
+  check bool "selected profile augments the dry-run command" true
+    (match commands with
+    | [ Sessy_ui.Launch command ] ->
+        command.argv
+        = ("codex", [ "resume"; "codex-fast-1"; "--profile"; "fast" ])
+    | _ -> false)
 
 let test_doctor_report () =
   let config = fixture_runtime_config () in
@@ -1145,8 +1206,12 @@ let () =
             test_shell_fs_preserves_tilde_without_home;
           test_case "invalid config types fall back with warnings" `Quick
             test_shell_config_loader_invalid_types_fall_back;
+          test_case "selected profile loads from config" `Quick
+            test_shell_config_loader_reads_selected_profile;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
+          test_case "dry-run uses selected profile" `Quick
+            test_shell_dry_run_uses_selected_profile;
           test_case "doctor report" `Quick test_doctor_report;
           test_case "bare sessy exits cleanly" `Quick
             test_shell_run_once_open_picker_is_success;

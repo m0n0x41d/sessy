@@ -84,6 +84,7 @@ type source_config = {
 type config = {
   default_scope : scope;
   preview : bool;
+  selected_profile : string option;
   sources : source_config list;
   launches : (tool * launch_template) list;
   profiles : profile list;

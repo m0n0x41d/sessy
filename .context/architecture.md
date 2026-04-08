@@ -143,6 +143,7 @@ type profile = {
 type config = {
   default_scope : scope;
   preview : bool;
+  selected_profile : string option;
   sources : source_config list;
   launches : (tool * launch_template) list;
   profiles : profile list;
@@ -704,6 +705,7 @@ External dependencies:
 [ui]
 scope = "repo"        # default scope: cwd | repo | all
 preview = true
+profile = "fast"
 
 [sources.claude]
 history = "~/.claude/history.jsonl"
@@ -733,7 +735,7 @@ extends = "codex"
 argv_append = ["--profile", "fast"]
 ```
 
-Config resolution order: built-in defaults → `~/.config/sessy/config.toml` → `./.sessy.toml` → CLI flags.
+Config resolution order: built-in defaults → `~/.config/sessy/config.toml` → `./.sessy.toml` → CLI flags. The selected launch profile is carried in resolved config as `ui.profile`.
 
 ---
 
