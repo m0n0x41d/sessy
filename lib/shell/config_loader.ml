@@ -49,6 +49,31 @@ let replace_profile profiles profile =
 
   loop [] profiles
 
+let fallback_profile tool profile_name =
+  {
+    name = profile_name;
+    base_tool = tool;
+    argv_append = [];
+    exec_mode_override = None;
+  }
+
+let current_profile_for_section tool profile_name profiles =
+  let exact_matches =
+    profiles
+    |> List.filter (fun profile ->
+        Tool.equal profile.base_tool tool
+        && String.equal profile.name profile_name)
+  in
+
+  match exact_matches with
+  | profile :: _ -> Some profile
+  | [] -> (
+      profiles
+      |> List.filter (fun profile -> String.equal profile.name profile_name)
+      |> function
+      | [ profile ] -> Some profile
+      | _ -> None)
+
 let find_optional toml accessor field =
   if not (Otoml.path_exists toml field) then Ok None
   else field |> Otoml.find_result toml accessor |> Result.map Option.some
@@ -239,6 +264,12 @@ let update_profiles path base toml warnings =
                profile_entries
                |> List.fold_left
                     (fun (config, warnings) (profile_name, profile_toml) ->
+                      let current_profile =
+                        config.profiles
+                        |> current_profile_for_section tool profile_name
+                        |> Option.value
+                             ~default:(fallback_profile tool profile_name)
+                      in
                       let extends_field =
                         [ "profiles"; tool_name tool; profile_name; "extends" ]
                       in
@@ -260,10 +291,11 @@ let update_profiles path base toml warnings =
                                 "profile %s has unsupported extends=%S"
                                 profile_name value
                             in
-                            (tool, warning path warning_message :: warnings)
-                        | Ok None -> (tool, warnings)
+                            ( current_profile.base_tool,
+                              warning path warning_message :: warnings )
+                        | Ok None -> (current_profile.base_tool, warnings)
                         | Error message ->
-                            ( tool,
+                            ( current_profile.base_tool,
                               field_warning path extends_field message
                               :: warnings )
                       in
@@ -279,23 +311,25 @@ let update_profiles path base toml warnings =
                         match
                           find_string_list profile_toml [ "argv_append" ]
                         with
-                        | Ok None -> ([], warnings)
+                        | Ok None -> (current_profile.argv_append, warnings)
                         | Ok (Some value) -> (value, warnings)
                         | Error message ->
-                            ( [],
+                            ( current_profile.argv_append,
                               field_warning path argv_append_field message
                               :: warnings )
                       in
                       let exec_mode_override, warnings =
                         match find_string profile_toml [ "exec_mode" ] with
-                        | Ok None -> (None, warnings)
+                        | Ok None ->
+                            (current_profile.exec_mode_override, warnings)
                         | Ok (Some value) -> (
                             match
                               value |> String.lowercase_ascii |> parse_exec_mode
                             with
                             | Ok value -> (Some value, warnings)
                             | Error message ->
-                                (None, warning path message :: warnings))
+                                ( current_profile.exec_mode_override,
+                                  warning path message :: warnings ))
                         | Error message ->
                             let exec_mode_field =
                               [
@@ -305,7 +339,7 @@ let update_profiles path base toml warnings =
                                 "exec_mode";
                               ]
                             in
-                            ( None,
+                            ( current_profile.exec_mode_override,
                               field_warning path exec_mode_field message
                               :: warnings )
                       in

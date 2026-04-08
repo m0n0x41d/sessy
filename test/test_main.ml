@@ -970,6 +970,40 @@ argv_append = "skip"
         (warnings
         |> List.exists (contains_substring ~needle:"launch.claude.argv")))
 
+let test_shell_profile_override_preserves_prior_values_on_invalid_input () =
+  let base_config =
+    {|
+[profiles.claude.unsafe]
+argv_append = ["--dangerously-skip-permissions"]
+|}
+  in
+  let invalid_override = {|
+[profiles.claude.unsafe]
+argv_append = "skip"
+|} in
+
+  with_temp_file base_config (fun base_path ->
+      with_temp_file invalid_override (fun override_path ->
+          let config, warnings =
+            Sessy_shell.load_config_from_paths [ base_path; override_path ]
+          in
+          let unsafe_profile =
+            config.profiles
+            |> List.find_opt (fun profile ->
+                Tool.equal profile.base_tool Claude
+                && String.equal profile.name "unsafe")
+            |> require_some "expected unsafe Claude profile"
+          in
+
+          check (list string) "invalid override preserves base argv append"
+            [ "--dangerously-skip-permissions" ]
+            unsafe_profile.argv_append;
+          check bool "invalid profile override warning recorded" true
+            (warnings
+            |> List.exists
+                 (contains_substring
+                    ~needle:"profiles.claude.unsafe.argv_append"))))
+
 let test_shell_load_sessions_is_tolerant () =
   let config =
     {
@@ -1145,6 +1179,8 @@ let () =
             test_shell_fs_preserves_tilde_without_home;
           test_case "invalid config types fall back with warnings" `Quick
             test_shell_config_loader_invalid_types_fall_back;
+          test_case "invalid profile override keeps prior values" `Quick
+            test_shell_profile_override_preserves_prior_values_on_invalid_input;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
           test_case "doctor report" `Quick test_doctor_report;
