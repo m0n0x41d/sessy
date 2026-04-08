@@ -347,6 +347,25 @@ let parse_file path base =
       | Ok toml -> apply_toml path base toml
       | Error message -> (base, [ warning path message ]))
 
+let has_declared_profile config profile_name =
+  config.profiles
+  |> List.exists (fun profile -> String.equal profile.name profile_name)
+
+let validate_selected_profile config warnings =
+  match config.selected_profile with
+  | None -> (config, warnings)
+  | Some profile_name when has_declared_profile config profile_name ->
+      (config, warnings)
+  | Some profile_name ->
+      let warning_message =
+        Printf.sprintf
+          "config: ui.profile references unknown profile %S; falling back to \
+           default"
+          profile_name
+      in
+
+      ({ config with selected_profile = None }, warnings @ [ warning_message ])
+
 let load_config_from_paths paths =
   let initial = Sessy_core.default_config in
 
@@ -362,7 +381,8 @@ let load_config_from_paths paths =
            (updated, warnings @ parse_warnings, updated :: layers))
        (initial, [], [])
   |> fun (_config, warnings, layers) ->
-  (Sessy_core.resolve_config (layers |> List.rev), warnings)
+  layers |> List.rev |> Sessy_core.resolve_config
+  |> fun config -> validate_selected_profile config warnings
 
 let default_paths () =
   [

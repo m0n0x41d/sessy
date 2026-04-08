@@ -1000,6 +1000,24 @@ argv_append = ["--profile", "fast"]
       check int "valid selected profile config has no warnings" 0
         (List.length warnings))
 
+let test_shell_config_loader_unknown_selected_profile_warns () =
+  let raw =
+    {|
+[ui]
+profile = "missing"
+|}
+  in
+
+  with_temp_file raw (fun path ->
+      let config, warnings = Sessy_shell.load_config_from_paths [ path ] in
+
+      check (option string) "unknown selected profile falls back to default"
+        None config.selected_profile;
+      check bool "unknown selected profile warning recorded" true
+        (warnings |> List.exists (contains_substring ~needle:"ui.profile"));
+      check bool "warning mentions missing profile name" true
+        (warnings |> List.exists (contains_substring ~needle:"missing")))
+
 let test_shell_load_sessions_is_tolerant () =
   let config =
     {
@@ -1208,6 +1226,8 @@ let () =
             test_shell_config_loader_invalid_types_fall_back;
           test_case "selected profile loads from config" `Quick
             test_shell_config_loader_reads_selected_profile;
+          test_case "unknown selected profile warns and falls back" `Quick
+            test_shell_config_loader_unknown_selected_profile_warns;
           test_case "source loading stays tolerant" `Quick
             test_shell_load_sessions_is_tolerant;
           test_case "dry-run uses selected profile" `Quick
