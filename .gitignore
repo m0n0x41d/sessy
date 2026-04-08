@@ -1,15 +1,24 @@
-# Generic generated artifacts
-node_modules/
-dist/
-build/
-.cache/
-*.log
-
-# OCaml and dune artifacts
+# OCaml / dune
 _build/
 _opam/
-.opam/
 *.install
+*.merlin
+.merlin
 
-# Local OS noise
+# opam
+_esy/
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-workspace
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Agent tooling
+.zenflow/
