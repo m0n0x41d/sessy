@@ -9,6 +9,9 @@ let require_session_id value =
 let require_some label option_value =
   option_value |> function Some value -> value | None -> fail label
 
+let require_ok label result_value =
+  result_value |> function Ok value -> value | Error _ -> fail label
+
 let make_session ?(tool = Claude) ?title ?first_prompt ?(cwd = "/tmp")
     ?project_key ?model ?(updated_at = 0.) ?(is_active = false) id =
   {
@@ -182,6 +185,9 @@ let test_launch_expansion () =
     make_session ~cwd:"/tmp/sessy" ~project_key:"sessy" ~title:"Fix ranking"
       "abc123"
   in
+  let session_without_project =
+    make_session ~cwd:"/tmp/sessy" ~title:"Fix ranking" "abc124"
+  in
   let profile =
     Some
       {
@@ -225,12 +231,33 @@ let test_launch_expansion () =
       default_exec_mode = Spawn;
     }
   in
-  let launch = Sessy_core.expand_template session profile template in
+  let invalid_template =
+    {
+      argv_template = ("{{project}}", [ "--resume"; "{{id}}" ]);
+      cwd_policy = `Session;
+      default_exec_mode = Spawn;
+    }
+  in
+  let mismatched_profile =
+    Some
+      {
+        name = "codex-fast";
+        base_tool = Codex;
+        argv_append = [ "--profile"; "fast" ];
+        exec_mode_override = Some Exec;
+      }
+  in
+  let launch =
+    Sessy_core.expand_template session profile template
+    |> require_ok "expected valid launch template to expand"
+  in
   let current_launch =
     Sessy_core.expand_template session None current_template
+    |> require_ok "expected current launch template to expand"
   in
   let minimal_launch =
     Sessy_core.expand_template session None minimal_template
+    |> require_ok "expected minimal launch template to expand"
   in
 
   check string "session cwd policy" "/tmp/sessy" launch.cwd;
@@ -253,8 +280,8 @@ let test_launch_expansion () =
     ]
     (snd launch.argv);
   check string "dry-run display"
-    "claude --resume abc123 --project sessy --title Fix ranking --cwd \
-     /tmp/sessy unsafe {{custom}} --dangerously-skip-permissions"
+    "claude --resume abc123 --project sessy --title 'Fix ranking' --cwd \
+     /tmp/sessy unsafe '{{custom}}' --dangerously-skip-permissions"
     launch.display;
   check
     (pair string (list string))
@@ -270,7 +297,15 @@ let test_launch_expansion () =
   check bool "default exec mode preserved" true
     (match current_launch.exec_mode with
     | Exec -> true
-    | Spawn | Print -> false)
+    | Spawn | Print -> false);
+  check bool "blank program is rejected" true
+    (match Sessy_core.expand_template session_without_project None invalid_template with
+    | Error (Invalid_value ("launch_template.argv_template", _)) -> true
+    | Ok _ | Error _ -> false);
+  check bool "mismatched profile is rejected" true
+    (match Sessy_core.expand_template session mismatched_profile template with
+    | Error (Invalid_value ("profile.base_tool", _)) -> true
+    | Ok _ | Error _ -> false)
 
 let test_fuzzy_matching () =
   let subsequence_score =

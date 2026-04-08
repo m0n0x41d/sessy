@@ -9,7 +9,7 @@ val expand_template :
   Sessy_domain.session ->
   Sessy_domain.profile option ->
   Sessy_domain.launch_template ->
-  Sessy_domain.launch_cmd
+  (Sessy_domain.launch_cmd, Sessy_domain.config_error) result
 
 val fuzzy_score : pattern:string -> haystack:string -> float option
 
