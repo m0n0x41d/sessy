@@ -110,7 +110,7 @@ let aggregate signals =
 
 let best_signal signals =
   match signals with
-  | [] -> Fuzzy
+  | [] -> None
   | head :: tail ->
       tail
       |> List.fold_left
@@ -118,9 +118,27 @@ let best_signal signals =
              if Float.compare candidate.weight best.weight > 0 then candidate
              else best)
            head
-      |> fun strongest -> strongest.match_kind
+      |> fun strongest -> Some strongest.match_kind
 
-let rank query ~cwd ~repo_root session =
+let recency_bonus ~now updated_at =
+  let age_hours =
+    now -. updated_at
+    |> Float.max 0.
+    |> fun seconds -> seconds /. 3600.
+  in
+
+  200. *. Float.exp (-.age_hours /. 168.)
+
+let resolve_match_kind query_text signals =
+  match signals with
+  | [] when String.length query_text = 0 -> Recency
+  | [] -> Recency
+  | _ ->
+      signals
+      |> best_signal
+      |> Option.value ~default:Recency
+
+let rank query ~now ~cwd ~repo_root session =
   let query_text = query.text |> normalized_query in
 
   let signals = session |> compute_signals query_text ~cwd ~repo_root in
@@ -129,29 +147,14 @@ let rank query ~cwd ~repo_root session =
   | false, [] -> None
   | _, _ ->
       Some
-        { session; score = aggregate signals; match_kind = best_signal signals }
-
-let recency_bonus ~latest updated_at =
-  let age_hours =
-    latest -. updated_at |> Float.max 0. |> fun seconds -> seconds /. 3600.
-  in
-
-  200. *. Float.exp (-.age_hours /. 168.)
+        {
+          session;
+          score = aggregate signals +. recency_bonus ~now session.updated_at;
+          match_kind = resolve_match_kind query_text signals;
+        }
 
 let sort_ranked ranked_sessions =
-  let latest =
-    ranked_sessions
-    |> List.fold_left
-         (fun current ranked -> Float.max current ranked.session.updated_at)
-         0.
-  in
-
   ranked_sessions
-  |> List.map (fun ranked ->
-      {
-        ranked with
-        score = ranked.score +. recency_bonus ~latest ranked.session.updated_at;
-      })
   |> List.stable_sort (fun left right -> Float.compare right.score left.score)
 
 let filter_scope scope ~cwd ~repo_root (sessions : session list) =

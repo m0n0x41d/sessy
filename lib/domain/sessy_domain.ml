@@ -84,6 +84,7 @@ type match_kind =
   | Id_prefix
   | Substring
   | Fuzzy
+  | Recency
 
 type ranked = {
   session : session;
@@ -106,7 +107,7 @@ type launch_cmd = {
 type cwd_policy = [ `Session | `Current ]
 
 type launch_template = {
-  argv_template : string list;
+  argv_template : string * string list;
   cwd_policy : cwd_policy;
   default_exec_mode : exec_mode;
 }

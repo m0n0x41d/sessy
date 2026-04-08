@@ -15,6 +15,7 @@ val fuzzy_score : pattern:string -> haystack:string -> float option
 
 val rank :
   Sessy_domain.query ->
+  now:float ->
   cwd:string ->
   repo_root:string option ->
   Sessy_domain.session ->

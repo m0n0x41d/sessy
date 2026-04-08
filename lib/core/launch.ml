@@ -47,10 +47,16 @@ let substitute_profile profile value =
   |> Option.value ~default:value
 
 let append_profile_args profile argv =
-  argv |> fun current ->
+  argv
+  |> fun current ->
   match profile with
   | None -> current
   | Some selected -> current @ selected.argv_append
+
+let expand_arg session profile value =
+  value
+  |> substitute_placeholder session
+  |> substitute_profile profile
 
 let resolve_cwd (session : session) cwd_policy =
   match cwd_policy with `Session -> session.cwd | `Current -> "."
@@ -62,21 +68,36 @@ let resolve_exec_mode profile template =
       selected.exec_mode_override
       |> Option.value ~default:template.default_exec_mode
 
-let split_argv argv =
-  match argv with head :: tail -> (head, tail) | [] -> ("", [])
+let argv_elements (head, tail) =
+  head :: tail
 
-let render_display argv = argv |> String.concat " "
+let render_display argv =
+  argv
+  |> argv_elements
+  |> String.concat " "
+
+let expand_argv_template session profile argv_template =
+  let head, tail = argv_template in
+  let expanded_head =
+    head
+    |> expand_arg session profile
+  in
+  let expanded_tail =
+    tail
+    |> List.map (expand_arg session profile)
+    |> append_profile_args profile
+  in
+
+  (expanded_head, expanded_tail)
 
 let expand_template session profile template =
   let argv =
     template.argv_template
-    |> List.map (substitute_placeholder session)
-    |> List.map (substitute_profile profile)
-    |> append_profile_args profile
+    |> expand_argv_template session profile
   in
 
   {
-    argv = split_argv argv;
+    argv;
     cwd = resolve_cwd session template.cwd_policy;
     exec_mode = resolve_exec_mode profile template;
     display = render_display argv;

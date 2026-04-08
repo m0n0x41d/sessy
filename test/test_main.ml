@@ -36,6 +36,12 @@ let check_ranked_ids label expected ranked_sessions =
 let check_session_ids label expected sessions =
   check (list string) label expected (session_ids sessions)
 
+let require_ranked label session_id ranked_sessions =
+  ranked_sessions
+  |> List.find_opt (fun ranked ->
+         String.equal session_id (Session_id.to_string ranked.session.id))
+  |> require_some label
+
 let test_session_id_validation () =
   check bool "empty id rejected" false
     (Option.is_some (Session_id.of_string ""));
@@ -91,7 +97,7 @@ let test_domain_record_construction () =
         [
           ( Codex,
             {
-              argv_template = [ "codex"; "resume"; "{{id}}" ];
+              argv_template = ("codex", [ "resume"; "{{id}}" ]);
               cwd_policy = `Session;
               default_exec_mode = Spawn;
             } );
@@ -134,7 +140,7 @@ let test_default_config_and_merge () =
         [
           ( Claude,
             {
-              argv_template = [ "claude"; "--continue" ];
+              argv_template = ("claude", [ "--continue" ]);
               cwd_policy = `Current;
               default_exec_mode = Exec;
             } );
@@ -188,33 +194,43 @@ let test_launch_expansion () =
   let template =
     {
       argv_template =
-        [
-          "claude";
-          "--resume";
-          "{{id}}";
-          "--project";
-          "{{project}}";
-          "--title";
-          "{{title}}";
-          "--cwd";
-          "{{cwd}}";
-          "{{profile}}";
-          "{{custom}}";
-        ];
+        ( "claude",
+          [
+            "--resume";
+            "{{id}}";
+            "--project";
+            "{{project}}";
+            "--title";
+            "{{title}}";
+            "--cwd";
+            "{{cwd}}";
+            "{{profile}}";
+            "{{custom}}";
+          ] );
       cwd_policy = `Session;
       default_exec_mode = Spawn;
     }
   in
   let current_template =
     {
-      argv_template = [ "codex"; "resume"; "{{id}}" ];
+      argv_template = ("codex", [ "resume"; "{{id}}" ]);
       cwd_policy = `Current;
       default_exec_mode = Exec;
+    }
+  in
+  let minimal_template =
+    {
+      argv_template = ("codex", []);
+      cwd_policy = `Session;
+      default_exec_mode = Spawn;
     }
   in
   let launch = Sessy_core.expand_template session profile template in
   let current_launch =
     Sessy_core.expand_template session None current_template
+  in
+  let minimal_launch =
+    Sessy_core.expand_template session None minimal_template
   in
 
   check string "session cwd policy" "/tmp/sessy" launch.cwd;
@@ -240,6 +256,16 @@ let test_launch_expansion () =
     "claude --resume abc123 --project sessy --title Fix ranking --cwd \
      /tmp/sessy unsafe {{custom}} --dangerously-skip-permissions"
     launch.display;
+  check
+    (pair string (list string))
+    "minimal templates stay non-empty"
+    ("codex", [])
+    minimal_launch.argv;
+  check
+    (pair string (list string))
+    "current template expands correctly"
+    ("codex", [ "resume"; "abc123" ])
+    current_launch.argv;
   check string "current cwd policy uses dot" "." current_launch.cwd;
   check bool "default exec mode preserved" true
     (match current_launch.exec_mode with
@@ -270,6 +296,7 @@ let test_fuzzy_matching () =
   check bool "consecutive bonus wins" true (consecutive_score > scattered_score)
 
 let test_rank_empty_query_orders_by_context_and_recency () =
+  let now = 5_000. in
   let query = { text = ""; scope = All; tool_filter = None; mode = Meta } in
   let sessions =
     [
@@ -286,16 +313,25 @@ let test_rank_empty_query_orders_by_context_and_recency () =
   let ranked =
     sessions
     |> List.filter_map
-         (Sessy_core.rank query ~cwd:"/work/sessy"
+         (Sessy_core.rank query ~now ~cwd:"/work/sessy"
             ~repo_root:(Some "/work/sessy"))
     |> Sessy_core.sort_ranked
+  in
+  let recency_ranked =
+    ranked
+    |> require_ranked "expected recency-only result" "recent-1"
   in
 
   check_ranked_ids "empty query uses context then recency"
     [ "exact-1"; "repo-1"; "recent-1"; "old-1" ]
-    ranked
+    ranked;
+  check bool "recency-only results are labeled as recency" true
+    (match recency_ranked.match_kind with
+    | Recency -> true
+    | Exact_cwd | Same_repo | Active | Id_prefix | Substring | Fuzzy -> false)
 
 let test_rank_text_signals () =
+  let now = 5_000. in
   let query = { text = "rank"; scope = All; tool_filter = None; mode = Meta } in
   let substring_session =
     make_session ~cwd:"/tmp/sub" ~updated_at:2_000. ~title:"ranking notes"
@@ -307,28 +343,63 @@ let test_rank_text_signals () =
   in
   let ranked =
     [ fuzzy_session; substring_session ]
-    |> List.filter_map (Sessy_core.rank query ~cwd:"/nowhere" ~repo_root:None)
+    |> List.filter_map
+         (Sessy_core.rank query ~now ~cwd:"/nowhere" ~repo_root:None)
     |> Sessy_core.sort_ranked
   in
 
   check_ranked_ids "substring beats fuzzy" [ "sub-1"; "fuzzy-1" ] ranked;
   check bool "unmatched query rejected" true
     (Option.is_none
-       (Sessy_core.rank query ~cwd:"/nowhere" ~repo_root:None
+       (Sessy_core.rank query ~now ~cwd:"/nowhere" ~repo_root:None
           (make_session ~cwd:"/tmp/none" ~title:"other text" "none-1")))
 
 let test_rank_id_prefix_kind () =
+  let now = 5_000. in
   let query = { text = "abc"; scope = All; tool_filter = None; mode = Meta } in
   let ranked =
     make_session ~cwd:"/elsewhere" "abc123"
-    |> Sessy_core.rank query ~cwd:"/nowhere" ~repo_root:None
+    |> Sessy_core.rank query ~now ~cwd:"/nowhere" ~repo_root:None
     |> require_some "expected id prefix match"
   in
 
   check bool "id prefix is best signal" true
     (match ranked.match_kind with
     | Id_prefix -> true
-    | Exact_cwd | Same_repo | Active | Substring | Fuzzy -> false)
+    | Exact_cwd | Same_repo | Active | Substring | Fuzzy | Recency -> false)
+
+let test_rank_score_is_independent_of_result_set () =
+  let now = 10_000. in
+  let query = { text = ""; scope = All; tool_filter = None; mode = Meta } in
+  let target =
+    make_session ~cwd:"/tmp/target" ~updated_at:2_000. "target-1"
+  in
+  let neighbor =
+    make_session ~cwd:"/tmp/neighbor" ~updated_at:9_000. "neighbor-1"
+  in
+  let target_ranked =
+    target
+    |> Sessy_core.rank query ~now ~cwd:"/elsewhere" ~repo_root:None
+    |> require_some "expected target to rank"
+  in
+  let neighbor_ranked =
+    neighbor
+    |> Sessy_core.rank query ~now ~cwd:"/elsewhere" ~repo_root:None
+    |> require_some "expected neighbor to rank"
+  in
+  let ranked_alone =
+    [ target_ranked ]
+    |> Sessy_core.sort_ranked
+    |> require_ranked "expected target in single-result sort" "target-1"
+  in
+  let ranked_with_neighbor =
+    [ target_ranked; neighbor_ranked ]
+    |> Sessy_core.sort_ranked
+    |> require_ranked "expected target in multi-result sort" "target-1"
+  in
+
+  check (float 0.000_001) "score is stable across result sets" ranked_alone.score
+    ranked_with_neighbor.score
 
 let test_filtering () =
   let sessions =
@@ -371,6 +442,8 @@ let () =
             test_rank_empty_query_orders_by_context_and_recency;
           test_case "text ranking signals" `Quick test_rank_text_signals;
           test_case "id prefix ranking" `Quick test_rank_id_prefix_kind;
+          test_case "rank scores stay set-independent" `Quick
+            test_rank_score_is_independent_of_result_set;
           test_case "scope and tool filters" `Quick test_filtering;
         ] );
     ]

@@ -20,13 +20,13 @@ let default_launches =
   [
     ( Claude,
       {
-        argv_template = [ "claude"; "--resume"; "{{id}}" ];
+        argv_template = ("claude", [ "--resume"; "{{id}}" ]);
         cwd_policy = `Session;
         default_exec_mode = Spawn;
       } );
     ( Codex,
       {
-        argv_template = [ "codex"; "resume"; "{{id}}" ];
+        argv_template = ("codex", [ "resume"; "{{id}}" ]);
         cwd_policy = `Session;
         default_exec_mode = Spawn;
       } );
