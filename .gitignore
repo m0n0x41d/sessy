@@ -1,0 +1,15 @@
+# Generic generated artifacts
+node_modules/
+dist/
+build/
+.cache/
+*.log
+
+# OCaml and dune artifacts
+_build/
+_opam/
+.opam/
+*.install
+
+# Local OS noise
+.DS_Store
