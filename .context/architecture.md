@@ -238,13 +238,13 @@ val fuzzy_score : pattern:string -> haystack:string -> float option
 ```
 rank(q, now, session) =
   let signals = compute_signals(q, session) in
-  if signals = [] then None
+  let admitted = signals <> [] || q.text = "" in
+  if not admitted then None
   else Some { session; score = aggregate(signals) + recency_bonus(now, session.updated_at); match_kind = best_signal_or_recency(signals) }
 
 expand_template(session, profile, tmpl) =
   tmpl.argv_template
   |> expand_argv_template session profile
-  |> validate_program
   |> build_launch_cmd tmpl.cwd_policy tmpl.default_exec_mode session
 
 resolve_config(layers) =
@@ -255,7 +255,7 @@ resolve_config(layers) =
 - Side effects (no IO signatures, no Eio dependency)
 - Non-determinism (all functions are pure: same input → same output)
 - Invalid ranking order (sort_ranked guarantees the policy)
-- Partial template expansion (all placeholders must resolve or error)
+- Unresolved known placeholders (`{{profile}}` must resolve or return an error)
 
 **Depends on:** Layer 0 (Domain)
 
@@ -282,14 +282,11 @@ module type SOURCE = sig
 
   val parse_detail : string -> (session, parse_error) result
   (** Parse a session detail file for preview hydration *)
-
-  val detect_active : string -> Session_id.t -> bool
-  (** Given PID file or session dir contents, detect if session is running *)
 end
 
 module Claude : SOURCE
 (** Parses ~/.claude/history.jsonl format.
-    Knows about project keys, session IDs, PID files. *)
+    Knows about project keys and session IDs. *)
 
 module Codex : SOURCE
 (** Parses ~/.codex/history.jsonl format.

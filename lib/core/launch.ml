@@ -2,6 +2,14 @@ open Sessy_domain
 
 let option_or_empty value = value |> Option.value ~default:""
 let profile_placeholder = "{{profile}}"
+let session_placeholders =
+  [
+    ("{{id}}", fun session -> Session_id.to_string session.id);
+    ("{{tool}}", fun session -> Tool.to_string session.tool);
+    ("{{cwd}}", fun session -> session.cwd);
+    ("{{project}}", fun session -> option_or_empty session.project_key);
+    ("{{title}}", fun session -> option_or_empty session.title);
+  ]
 
 let replace_literal ~pattern ~replacement value =
   let pattern_length = String.length pattern in
@@ -25,53 +33,71 @@ let replace_literal ~pattern ~replacement value =
   loop 0;
   Buffer.contents buffer
 
-let contains_literal ~pattern value =
-  let pattern_length = String.length pattern in
-  let value_length = String.length value in
+let find_placeholder_end value start_index =
+  let max_index = String.length value - 1 in
 
   let rec loop index =
-    if pattern_length = 0 then true
-    else if index + pattern_length > value_length then false
-    else if String.sub value index pattern_length = pattern then true
+    if index >= max_index then None
+    else if value.[index] = '}' && value.[index + 1] = '}' then Some (index + 2)
     else loop (index + 1)
   in
 
-  loop 0
+  loop (start_index + 2)
 
-let session_placeholders session =
-  [
-    ("{{id}}", Session_id.to_string session.id);
-    ("{{tool}}", Tool.to_string session.tool);
-    ("{{cwd}}", session.cwd);
-    ("{{project}}", option_or_empty session.project_key);
-    ("{{title}}", option_or_empty session.title);
-  ]
+let session_placeholder_value session placeholder =
+  session_placeholders
+  |> List.find_map (fun (pattern, render) ->
+         if String.equal pattern placeholder then Some (render session) else None)
 
-let substitute_placeholder session value =
-  session_placeholders session
-  |> List.fold_left
-       (fun current (pattern, replacement) ->
-         current |> replace_literal ~pattern ~replacement)
-       value
-
-let substitute_profile profile value =
+let profile_placeholder_value profile value =
   match profile with
-  | Some selected ->
-      value
-      |> replace_literal ~pattern:profile_placeholder ~replacement:selected.name
-      |> Result.ok
+  | Some selected -> Ok selected.name
   | None ->
-      value
-      |> contains_literal ~pattern:profile_placeholder
+      Error
+        (Invalid_value
+           ( "launch_template.argv_template",
+             Printf.sprintf
+               "template requires an active profile for %S"
+               value ))
+
+let placeholder_value session profile value placeholder =
+  if String.equal placeholder profile_placeholder then
+    profile_placeholder_value profile value
+  else
+    placeholder
+    |> session_placeholder_value session
+    |> Option.value ~default:placeholder
+    |> Result.ok
+
+let expand_arg session profile value =
+  let value_length = String.length value in
+  let buffer = Buffer.create value_length in
+
+  let rec loop index =
+    if index >= value_length then Ok (Buffer.contents buffer)
+    else if index + 1 < value_length && value.[index] = '{' && value.[index + 1] = '{' then
+      index
+      |> find_placeholder_end value
       |> function
-      | true ->
-          Error
-            (Invalid_value
-               ( "launch_template.argv_template",
-                 Printf.sprintf
-                   "template requires an active profile for %S"
-                   value ))
-      | false -> Ok value
+      | None ->
+          Buffer.add_char buffer value.[index];
+          loop (index + 1)
+      | Some end_index ->
+          let placeholder =
+            String.sub value index (end_index - index)
+          in
+
+          Result.bind
+            (placeholder_value session profile value placeholder)
+            (fun replacement ->
+              Buffer.add_string buffer replacement;
+              loop end_index)
+    else (
+      Buffer.add_char buffer value.[index];
+      loop (index + 1))
+  in
+
+  loop 0
 
 let append_profile_args profile argv =
   argv
@@ -79,11 +105,6 @@ let append_profile_args profile argv =
   match profile with
   | None -> current
   | Some selected -> current @ selected.argv_append
-
-let expand_arg session profile value =
-  value
-  |> substitute_placeholder session
-  |> substitute_profile profile
 
 let collect_results items =
   let collect accumulated current =
