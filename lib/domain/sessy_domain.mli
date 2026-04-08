@@ -2,51 +2,24 @@ type tool =
   | Claude
   | Codex
 
-module Tool = struct
+module Tool : sig
   type t = tool =
     | Claude
     | Codex
 
-  let compare left right =
-    match (left, right) with
-    | Claude, Claude -> 0
-    | Claude, Codex -> -1
-    | Codex, Claude -> 1
-    | Codex, Codex -> 0
-
-  let equal left right =
-    left
-    |> compare right
-    |> Int.equal 0
-
-  let to_string = function
-    | Claude -> "claude"
-    | Codex -> "codex"
+  val compare : t -> t -> int
+  val equal : t -> t -> bool
+  val to_string : t -> string
 end
 
-module Session_id = struct
-  type t = string
+module Session_id : sig
+  type t
 
-  let of_string value =
-    value
-    |> String.length
-    |> function
-    | 0 -> None
-    | _ -> Some value
-
-  let to_string value = value
-
-  let short value =
-    value
-    |> String.length
-    |> Int.min 8
-    |> String.sub value 0
-
-  let equal left right =
-    String.equal left right
-
-  let compare left right =
-    String.compare left right
+  val of_string : string -> t option
+  val to_string : t -> string
+  val short : t -> string
+  val equal : t -> t -> bool
+  val compare : t -> t -> int
 end
 
 type session = {
