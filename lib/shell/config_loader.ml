@@ -1,6 +1,12 @@
 open Sessy_domain
 
 type warnings = string list
+type scoped_profile = { section_tool : tool; profile : profile }
+
+type loader_state = {
+  config : config;
+  scoped_profiles : scoped_profile list;
+}
 
 let tool_name = Tool.to_string
 let default_tool_order = [ Claude; Codex ]
@@ -37,17 +43,17 @@ let replace_launch launches tool launch =
 
   loop [] launches
 
-let replace_profile profiles profile =
+let replace_scoped_profile scoped_profiles scoped_profile =
   let rec loop acc = function
-    | [] -> profile :: acc |> List.rev
+    | [] -> scoped_profile :: acc |> List.rev
     | current :: tail
-      when Tool.equal current.base_tool profile.base_tool
-           && String.equal current.name profile.name ->
-        List.rev_append acc (profile :: tail)
+      when Tool.equal current.section_tool scoped_profile.section_tool
+           && String.equal current.profile.name scoped_profile.profile.name ->
+        List.rev_append acc (scoped_profile :: tail)
     | current :: tail -> loop (current :: acc) tail
   in
 
-  loop [] profiles
+  loop [] scoped_profiles
 
 let fallback_profile tool profile_name =
   {
@@ -57,11 +63,34 @@ let fallback_profile tool profile_name =
     exec_mode_override = None;
   }
 
-let current_profile_for_section tool profile_name profiles =
-  profiles
-  |> List.find_opt (fun profile ->
-         Tool.equal profile.base_tool tool
-         && String.equal profile.name profile_name)
+let current_profile_for_section tool profile_name scoped_profiles =
+  scoped_profiles
+  |> List.find_opt (fun scoped_profile ->
+         Tool.equal scoped_profile.section_tool tool
+         && String.equal scoped_profile.profile.name profile_name)
+  |> Option.map (fun scoped_profile -> scoped_profile.profile)
+
+let materialize_profiles scoped_profiles =
+  scoped_profiles
+  |> List.map (fun scoped_profile -> scoped_profile.profile)
+
+let with_config state config = { state with config }
+
+let with_scoped_profiles state scoped_profiles =
+  let config =
+    {
+      state.config with
+      profiles = scoped_profiles |> materialize_profiles;
+    }
+  in
+
+  { config; scoped_profiles }
+
+let scoped_profile_of_profile profile =
+  {
+    section_tool = profile.base_tool;
+    profile;
+  }
 
 let find_optional toml accessor field =
   if not (Otoml.path_exists toml field) then Ok None
@@ -239,22 +268,22 @@ let update_launches path base toml warnings =
                  warnings ))
        (base, warnings)
 
-let update_profiles path base toml warnings =
+let update_profiles path state toml warnings =
   default_tool_order
   |> List.fold_left
-       (fun (config, warnings) tool ->
+       (fun (state, warnings) tool ->
          let profiles_path = [ "profiles"; tool_name tool ] in
 
-         if not (Otoml.path_exists toml profiles_path) then (config, warnings)
+         if not (Otoml.path_exists toml profiles_path) then (state, warnings)
          else
            match Otoml.find_result toml Otoml.get_table profiles_path with
-           | Error message -> (config, warning path message :: warnings)
+           | Error message -> (state, warning path message :: warnings)
            | Ok profile_entries ->
                profile_entries
                |> List.fold_left
-                    (fun (config, warnings) (profile_name, profile_toml) ->
+                    (fun (state, warnings) (profile_name, profile_toml) ->
                       let current_profile =
-                        config.profiles
+                        state.scoped_profiles
                         |> current_profile_for_section tool profile_name
                         |> Option.value
                              ~default:(fallback_profile tool profile_name)
@@ -340,44 +369,57 @@ let update_profiles path base toml warnings =
                           exec_mode_override;
                         }
                       in
+                      let scoped_profile = { section_tool = tool; profile } in
+                      let scoped_profiles =
+                        replace_scoped_profile state.scoped_profiles
+                          scoped_profile
+                      in
+                      let state = with_scoped_profiles state scoped_profiles in
 
-                      ( {
-                          config with
-                          profiles = replace_profile config.profiles profile;
-                        },
-                        warnings ))
-                    (config, warnings))
-       (base, warnings)
+                      (state, warnings))
+                    (state, warnings))
+       (state, warnings)
 
-let apply_toml path base toml =
-  let config, warnings = update_ui path base toml [] in
-  let config, warnings = update_sources path config toml warnings in
-  let config, warnings = update_launches path config toml warnings in
-  let config, warnings = update_profiles path config toml warnings in
+let apply_toml path state toml =
+  let config, warnings = update_ui path state.config toml [] in
+  let state = with_config state config in
+  let config, warnings = update_sources path state.config toml warnings in
+  let state = with_config state config in
+  let config, warnings = update_launches path state.config toml warnings in
+  let state = with_config state config in
+  let state, warnings = update_profiles path state toml warnings in
 
-  (config, warnings |> List.rev)
+  (state, warnings |> List.rev)
 
-let parse_file path base =
+let parse_file path state =
   match Fs.read_file path with
-  | Error (`Io_error message) -> (base, [ warning path message ])
+  | Error (`Io_error message) -> (state, [ warning path message ])
   | Ok raw -> (
       match Otoml.Parser.from_string_result raw with
-      | Ok toml -> apply_toml path base toml
-      | Error message -> (base, [ warning path message ]))
+      | Ok toml -> apply_toml path state toml
+      | Error message -> (state, [ warning path message ]))
 
 let load_config_from_paths paths =
-  let initial = Sessy_core.default_config in
+  let initial_config = Sessy_core.default_config in
+  let initial =
+    {
+      config = initial_config;
+      scoped_profiles =
+        initial_config.profiles
+        |> List.map scoped_profile_of_profile;
+    }
+  in
 
   paths
   |> List.fold_left
-       (fun (config, warnings, layers) path ->
+       (fun (state, warnings, layers) path ->
          let expanded = Fs.expand_home path in
 
-         if not (Fs.file_exists expanded) then (config, warnings, layers)
+         if not (Fs.file_exists expanded) then (state, warnings, layers)
          else
-           let updated, parse_warnings = parse_file expanded config in
+           let updated, parse_warnings = parse_file expanded state in
 
-           (updated, warnings @ parse_warnings, updated :: layers))
+           (updated, warnings @ parse_warnings, updated.config :: layers))
        (initial, [], [])
   |> fun (_config, warnings, layers) ->
   (Sessy_core.resolve_config (layers |> List.rev), warnings)

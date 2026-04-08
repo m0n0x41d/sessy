@@ -16,3 +16,7 @@
 (test
  (name launch_profile_placeholder_test)
  (libraries sessy_domain sessy_core alcotest))
+
+(test
+ (name config_loader_profile_identity_test)
+ (libraries sessy_domain sessy_shell alcotest))
