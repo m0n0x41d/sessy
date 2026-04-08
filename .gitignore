@@ -4,9 +4,16 @@ _opam/
 *.install
 *.merlin
 .merlin
+dist/
+build/
+.cache/
+*.log
 
 # opam
 _esy/
+
+# Common generated directories
+node_modules/
 
 # Editor / IDE
 *.swp

@@ -1,4 +1,5 @@
 (library
  (name sessy_core)
  (public_name sessy.core)
- (libraries sessy_domain))
+ (libraries sessy_domain)
+ (private_modules Config_merge Launch Fuzzy Rank))

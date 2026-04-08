@@ -1,1 +1,9 @@
-(* Foundation scaffold stub. *)
+let default_config = Config_merge.default_config
+let merge_config = Config_merge.merge_config
+let resolve_config = Config_merge.resolve_config
+let expand_template = Launch.expand_template
+let fuzzy_score = Fuzzy.fuzzy_score
+let rank = Rank.rank
+let sort_ranked = Rank.sort_ranked
+let filter_scope = Rank.filter_scope
+let filter_tool = Rank.filter_tool

@@ -60,7 +60,7 @@ For every step below:
 - Use the `h-reason` skill for non-mechanical decisions, especially boundary choices, data-format mapping, runtime integration, and packaging trade-offs.
 - Keep unit tests inside the same step as the implementation they verify.
 
-### [x] Step: Foundation scaffold and live-format validation
+### [ ] Step: Foundation scaffold and live-format validation
 <!-- chat-id: 23c89a1d-8362-458a-8b0c-a0cd51c8c3aa -->
 
 - Scope: T0.1-T0.4 from `.context/implementation-plan.md`.
@@ -68,21 +68,28 @@ For every step below:
 - Invariants: no production logic before the scaffold exists; dune dependencies must match the architecture; fixture formats must be evidence-based, not guessed.
 - Verify: `ocaml --version`, `dune --version`, `opam install . --deps-only`, `dune build`, and fixture parse sanity checks.
 - Evidence: live history inspection confirmed Claude history currently uses `display`/`project`/`timestamp`/`sessionId?` and Codex history uses `session_id`/`ts`/`text`; sanitized fixtures were created from those observed shapes.
-- Evidence: `minttea 0.0.2` is not solvable on the local OCaml 5.4.1 environment because it pins `riot 0.0.5` (`ocaml < 5.3`), so the foundation scaffold omits the TUI runtime dependency and defers that package choice to the later TUI step.
+- Blocked: the scaffold currently builds only after omitting `minttea`, so this step is not accepted yet.
+- Runtime evidence: published `minttea 0.0.2` fails on the local OCaml 5.4.1 environment because it pins `riot 0.0.5` (`ocaml < 5.3`).
+- Runtime evidence: upstream `minttea` tag `0.0.3` and current `main` still fail on OCaml 5.4 here through the `riot -> config -> ppxlib < 0.36` chain, even when tested in isolated temporary switches with pinned sources.
+- Next decision required: either approve an updated runtime/package choice in the architecture, or produce a verified pinned package set that restores `minttea` without lowering the OCaml 5.4 floor.
 
-### [ ] Step: Domain kernel
+### [x] Step: Domain kernel
+<!-- chat-id: c6d13a50-8260-4c66-aca3-780a9dce6618 -->
 
 - Scope: T1.1-T1.4.
 - Do: implement `Sessy_domain` types, opaque `Session_id`, launch/config types, and domain error vocabulary; add the public `.mli`.
 - Invariants: Layer 0 contains vocabulary only, not business logic or IO; invalid states should be made inexpressible in the type system.
 - Verify: `dune build` plus direct tests for `Session_id` and representative record construction.
 
-### [ ] Step: Core config, search, and launch logic
+### [x] Step: Core config, search, and launch logic
+<!-- chat-id: b9bdcf8d-ad0e-4085-a776-0d49ec77d8d6 -->
 
 - Scope: T2.1-T2.5.
 - Do: implement pure config resolution, placeholder expansion, fuzzy matching, ranking, and filtering; expose the core public API.
 - Invariants: Layer 1 stays pure; ranking follows the additive signal model from the architecture; launch commands are argv-based, not shell-string based.
 - Verify: `dune test` for config merge, template expansion, ranking order, empty-query behavior, and filters.
+- Evidence: `lib/core/` now contains the Layer 1 modules for config merge, launch assembly, fuzzy matching, ranking, and the public `Sessy_core` facade.
+- Evidence: `dune build` and `dune test` both pass with the new acceptance coverage in `test/test_main.ml`.
 
 ### [ ] Step: Source adapters
 
