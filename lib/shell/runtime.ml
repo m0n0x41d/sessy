@@ -3,6 +3,10 @@ open Sessy_domain
 type handlers = {
   copy_to_clipboard : string -> (string option, string) result;
   open_directory : string -> (string option, string) result;
+  open_session_directory : Session_id.t -> (string option, string) result;
+  resolve_launch :
+    Session_id.t -> Sessy_ui.launch_mode -> (launch_cmd, string) result;
+  resolve_preview : Session_id.t -> (Sessy_ui.preview, string) result;
   reload_snapshot : unit -> (Sessy_ui.reload_snapshot, string) result;
 }
 
@@ -25,7 +29,9 @@ let with_alt_screen render =
 
 let prepare_terminal fd =
   let original = Unix.tcgetattr fd in
-  let raw = { original with c_icanon = false; c_echo = false; c_isig = false } in
+  let raw =
+    { original with c_icanon = false; c_echo = false; c_isig = false }
+  in
 
   raw.c_ixon <- false;
   raw.c_ixoff <- false;
@@ -42,8 +48,7 @@ let terminal_size () =
     try
       let line = input_line process in
       let tokens =
-        line
-        |> String.split_on_char ' '
+        line |> String.split_on_char ' '
         |> List.filter (fun token -> not (String.equal token ""))
       in
 
@@ -55,8 +60,7 @@ let terminal_size () =
               height = int_of_string rows;
             }
       | _ -> None
-    with
-    | End_of_file | Failure _ -> None
+    with End_of_file | Failure _ -> None
   in
 
   let _ = Unix.close_process_in process in
@@ -66,11 +70,35 @@ let terminal_size () =
 let sync_terminal (model : Sessy_ui.model) =
   let terminal = terminal_size () in
 
-  if Int.equal terminal.width model.terminal.width
-     && Int.equal terminal.height model.terminal.height
+  if
+    Int.equal terminal.width model.terminal.width
+    && Int.equal terminal.height model.terminal.height
   then model
+  else Sessy_ui.update model (Sessy_ui.Window_resized terminal) |> fst
+
+let selected_session_id (model : Sessy_ui.model) =
+  match List.nth_opt model.results model.cursor with
+  | Some (ranked : ranked) -> Some ranked.session.id
+  | None -> None
+
+let preview_is_current (model : Sessy_ui.model) session_id =
+  match model.preview with
+  | Some preview -> Session_id.equal preview.session.id session_id
+  | None -> false
+
+let sync_preview handlers (model : Sessy_ui.model) =
+  if not model.preview_visible then model
   else
-    Sessy_ui.update model (Sessy_ui.Window_resized terminal) |> fst
+    match selected_session_id model with
+    | None -> Sessy_ui.update model (Sessy_ui.Preview_loaded None) |> fst
+    | Some session_id when preview_is_current model session_id -> model
+    | Some session_id -> (
+        match handlers.resolve_preview session_id with
+        | Ok preview ->
+            Sessy_ui.update model (Sessy_ui.Preview_loaded (Some preview))
+            |> fst
+        | Error message ->
+            Sessy_ui.update model (Sessy_ui.Notice_set (Some message)) |> fst)
 
 let render (model : Sessy_ui.model) =
   output_string Stdlib.stdout "\027[H\027[2J";
@@ -95,8 +123,7 @@ let drop_last text =
   | 0 -> ""
   | length -> String.sub text 0 (length - 1)
 
-let append_char text char =
-  text ^ String.make 1 char
+let append_char text char = text ^ String.make 1 char
 
 let decode_input (model : Sessy_ui.model) = function
   | '\r' | '\n' -> Some Sessy_ui.Session_selected
@@ -132,9 +159,7 @@ let read_message fd (model : Sessy_ui.model) =
   | Some char -> char |> decode_input model
 
 let notice_message result =
-  match result with
-  | Ok notice -> notice
-  | Error message -> Some message
+  match result with Ok notice -> notice | Error message -> Some message
 
 let rec resolve_command handlers (model : Sessy_ui.model) command =
   match command with
@@ -144,17 +169,21 @@ let rec resolve_command handlers (model : Sessy_ui.model) command =
   | Sessy_ui.Copy_to_clipboard text ->
       let notice = text |> handlers.copy_to_clipboard |> notice_message in
 
-      let model, command =
-        Sessy_ui.update model (Sessy_ui.Notice_set notice)
-      in
+      let model, command = Sessy_ui.update model (Sessy_ui.Notice_set notice) in
 
       resolve_command handlers model command
   | Sessy_ui.Open_directory path ->
       let notice = path |> handlers.open_directory |> notice_message in
 
-      let model, command =
-        Sessy_ui.update model (Sessy_ui.Notice_set notice)
+      let model, command = Sessy_ui.update model (Sessy_ui.Notice_set notice) in
+
+      resolve_command handlers model command
+  | Sessy_ui.Resolve_open_directory session_id ->
+      let notice =
+        session_id |> handlers.open_session_directory |> notice_message
       in
+
+      let model, command = Sessy_ui.update model (Sessy_ui.Notice_set notice) in
 
       resolve_command handlers model command
   | Sessy_ui.Reload_index -> (
@@ -183,8 +212,18 @@ let rec resolve_command handlers (model : Sessy_ui.model) command =
       in
 
       resolve_command handlers model command
-  | Sessy_ui.Print_sessions _ | Sessy_ui.Print_preview _ | Sessy_ui.Resolve_last _
-  | Sessy_ui.Resolve_resume _ | Sessy_ui.Resolve_preview _ | Sessy_ui.Run_doctor ->
+  | Sessy_ui.Resolve_resume (session_id, launch_mode) -> (
+      match handlers.resolve_launch session_id launch_mode with
+      | Ok command -> Finish (`Launch command)
+      | Error message ->
+          let model, command =
+            Sessy_ui.update model (Sessy_ui.Notice_set (Some message))
+          in
+
+          resolve_command handlers model command)
+  | Sessy_ui.Print_sessions _ | Sessy_ui.Print_preview _
+  | Sessy_ui.Resolve_last _ | Sessy_ui.Resolve_preview _ | Sessy_ui.Run_doctor
+    ->
       let model, command =
         Sessy_ui.update model
           (Sessy_ui.Notice_set
@@ -199,7 +238,7 @@ let step handlers (model : Sessy_ui.model) message =
   resolve_command handlers model command
 
 let rec loop handlers (model : Sessy_ui.model) =
-  let model = model |> sync_terminal in
+  let model = model |> sync_terminal |> sync_preview handlers in
 
   render model;
 

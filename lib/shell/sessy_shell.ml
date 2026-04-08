@@ -1,5 +1,4 @@
 open Sessy_domain
-
 module Session_id_set = Set.Make (Session_id)
 
 let read_file = Fs.read_file
@@ -52,9 +51,7 @@ let load_sessions config =
 let print_warnings warnings = warnings |> List.iter prerr_endline
 let print_output text = if String.equal text "" then () else print_endline text
 
-type launch_request =
-  | Last_request
-  | Session_request of Session_id.t
+type launch_request = Last_request | Session_request of Session_id.t
 
 let config_error_message = function
   | File_not_found path -> Printf.sprintf "file not found: %s" path
@@ -67,24 +64,22 @@ let session_not_found_message session_id =
 let lookup_launch config tool =
   config.launches
   |> List.find_map (fun (candidate, launch) ->
-         if Tool.equal candidate tool then Some launch else None)
+      if Tool.equal candidate tool then Some launch else None)
   |> function
   | Some launch -> Ok launch
   | None ->
-      tool
-      |> Tool.to_string
+      tool |> Tool.to_string
       |> Printf.sprintf "missing launch template for %s"
       |> Result.error
 
 let lookup_source config tool =
-  config.sources
-  |> List.find_opt (fun source -> Tool.equal source.tool tool)
+  config.sources |> List.find_opt (fun source -> Tool.equal source.tool tool)
 
 let lookup_profile config tool profile_name =
   config.profiles
   |> List.find_opt (fun profile ->
-         Tool.equal profile.base_tool tool
-         && String.equal profile.name profile_name)
+      Tool.equal profile.base_tool tool
+      && String.equal profile.name profile_name)
 
 let tool_profiles config tool =
   config.profiles
@@ -115,22 +110,21 @@ let launch_requires_profile launch =
   |> List.exists (fun value -> string_contains value profile_placeholder)
 
 let profile_names profiles =
-  profiles
-  |> List.map (fun profile -> profile.name)
-  |> String.concat ", "
+  profiles |> List.map (fun profile -> profile.name) |> String.concat ", "
 
 let missing_profile_message tool =
   tool |> Tool.to_string
-  |> Printf.sprintf "launch template for %s requires a profile, but none is configured"
+  |> Printf.sprintf
+       "launch template for %s requires a profile, but none is configured"
 
 let unknown_profile_message tool profile_name =
-  Printf.sprintf "unknown profile for %s: %s"
-    (tool |> Tool.to_string)
+  Printf.sprintf "unknown profile for %s: %s" (tool |> Tool.to_string)
     profile_name
 
 let ambiguous_profile_message tool profiles =
   Printf.sprintf
-    "launch template for %s requires a selected profile, but multiple are configured: %s"
+    "launch template for %s requires a selected profile, but multiple are \
+     configured: %s"
     (tool |> Tool.to_string)
     (profiles |> profile_names)
 
@@ -156,22 +150,18 @@ let path_is_directory path =
 
 let detail_roots source =
   [ source.sessions_path; source.projects_path ]
-  |> List.filter_map Fun.id
-  |> List.map expand_home
+  |> List.filter_map Fun.id |> List.map expand_home
   |> List.sort_uniq String.compare
 
 let detail_name_matches session_id name =
   let session_id = session_id |> Session_id.to_string in
 
-  [
-    name;
-    Filename.basename name;
-  ]
+  [ name; Filename.basename name ]
   |> List.exists (fun candidate ->
-         String.equal candidate session_id
-         || String.equal candidate (session_id ^ ".jsonl")
-         || String.equal candidate (session_id ^ ".json")
-         || string_contains candidate session_id)
+      String.equal candidate session_id
+      || String.equal candidate (session_id ^ ".jsonl")
+      || String.equal candidate (session_id ^ ".json")
+      || string_contains candidate session_id)
 
 let rec detail_candidate_paths root session_id =
   if not (file_exists root) then []
@@ -182,11 +172,12 @@ let rec detail_candidate_paths root session_id =
     | Ok entries ->
         entries
         |> List.concat_map (fun entry ->
-               let path = Filename.concat root entry in
+            let path = Filename.concat root entry in
 
-               if path_is_directory path then detail_candidate_paths path session_id
-               else if detail_name_matches session_id entry then [ path ]
-               else [])
+            if path_is_directory path then
+              detail_candidate_paths path session_id
+            else if detail_name_matches session_id entry then [ path ]
+            else [])
 
 let read_detail_session source session_id path =
   match read_file path with
@@ -195,15 +186,12 @@ let read_detail_session source session_id path =
       let module Adapter =
         (val Sessy_adapter.adapter_for_tool source.tool : Sessy_adapter.SOURCE)
       in
-
       match Adapter.parse_detail raw with
       | Ok detail when Session_id.equal detail.id session_id -> Some detail
       | Ok _ | Error _ -> None)
 
 let merge_optional preferred fallback =
-  match preferred with
-  | Some _ -> preferred
-  | None -> fallback
+  match preferred with Some _ -> preferred | None -> fallback
 
 let merge_text preferred fallback =
   if String.equal preferred "" then fallback else preferred
@@ -222,14 +210,14 @@ let merge_session base detail =
 let hydrate_session_detail ~config (session : session) =
   match lookup_source config session.tool with
   | None -> session
-  | Some source ->
+  | Some source -> (
       detail_roots source
       |> List.find_map (fun root ->
-             detail_candidate_paths root session.id
-             |> List.find_map (read_detail_session source session.id))
+          detail_candidate_paths root session.id
+          |> List.find_map (read_detail_session source session.id))
       |> function
       | Some detail -> merge_session session detail
-      | None -> session
+      | None -> session)
 
 let launch_session ~cwd (session : session) : session =
   if String.equal session.cwd "" then { session with cwd } else session
@@ -244,7 +232,8 @@ let expand_launch_cmd ~config ~active_profile ~launch_mode (session : session) =
   | Error _ as error -> error
   | Ok launch -> (
       match
-        resolve_launch_profile ~config ~tool:session.tool ~launch ~active_profile
+        resolve_launch_profile ~config ~tool:session.tool ~launch
+          ~active_profile
       with
       | Error _ as error -> error
       | Ok profile ->
@@ -260,15 +249,13 @@ let prepare_launch_cmd ~config ~active_profile ~launch_mode ~cwd
   expand_launch_cmd ~config ~active_profile ~launch_mode launched
 
 let repo_scope repo_root =
-  repo_root
-  |> Option.map (fun _ -> Repo)
-  |> Option.value ~default:Cwd
+  repo_root |> Option.map (fun _ -> Repo) |> Option.value ~default:Cwd
 
 let empty_query scope = { text = ""; scope; tool_filter = None; mode = Meta }
 
 let take count values =
   let rec loop remaining acc pending =
-    match remaining, pending with
+    match (remaining, pending) with
     | 0, _ | _, [] -> acc |> List.rev
     | _, head :: tail -> loop (remaining - 1) (head :: acc) tail
   in
@@ -288,8 +275,7 @@ let dedupe_sessions sessions =
          if Session_id_set.mem session.id seen then (seen, acc)
          else (Session_id_set.add session.id seen, session :: acc))
        (Session_id_set.empty, [])
-  |> snd
-  |> List.rev
+  |> snd |> List.rev
 
 let last_detail_probe_limit = 16
 
@@ -310,14 +296,15 @@ let select_last_session ~config ~index ~cwd ~repo_root ~now =
     |> List.map (hydrate_session_detail ~config)
   in
   let candidate_index =
-    [ primary_candidate; fallback_candidate ]
-    |> List.filter_map Fun.id
-    |> fun sessions -> sessions @ hydrated_unknown_candidates
-    |> dedupe_sessions
-    |> Sessy_index.build
+    [ primary_candidate; fallback_candidate ] |> List.filter_map Fun.id
+    |> fun sessions ->
+    sessions @ hydrated_unknown_candidates
+    |> dedupe_sessions |> Sessy_index.build
   in
 
-  ranked_sessions candidate_index (empty_query primary_scope) ~now ~cwd ~repo_root
+  ranked_sessions candidate_index
+    (empty_query primary_scope)
+    ~now ~cwd ~repo_root
   |> first_or_none
   |> function
   | Some session -> Some session
@@ -334,18 +321,24 @@ let resolve_preview ~config ~index ~session_id ~cwd ~active_profile =
   session_id
   |> resolve_index_session ~index
   |> Result.map (fun session ->
-         let detail_session = session |> hydrate_session_detail ~config in
-         let launch =
-           detail_session
-           |> launch_session ~cwd
-           |> expand_launch_cmd ~config ~active_profile
-                ~launch_mode:Sessy_ui.Default
-         in
+      let detail_session = session |> hydrate_session_detail ~config in
+      let launch =
+        detail_session |> launch_session ~cwd
+        |> expand_launch_cmd ~config ~active_profile
+             ~launch_mode:Sessy_ui.Default
+      in
 
-         ({ session = detail_session; launch } : Sessy_ui.preview))
+      ({ session = detail_session; launch } : Sessy_ui.preview))
 
-let resolve_launch_cmd ~config ~index ~(request : launch_request) ~active_profile
-    ~launch_mode ~cwd ~repo_root ~now =
+let resolve_session_directory ~config ~index ~session_id ~cwd =
+  session_id
+  |> resolve_index_session ~index
+  |> Result.map (hydrate_session_detail ~config)
+  |> Result.map (launch_session ~cwd)
+  |> Result.map (fun (session : session) -> session.cwd)
+
+let resolve_launch_cmd ~config ~index ~(request : launch_request)
+    ~active_profile ~launch_mode ~cwd ~repo_root ~now =
   let selected_session =
     match request with
     | Last_request -> (
@@ -403,8 +396,7 @@ type loaded_state = {
   index : Sessy_index.t;
 }
 
-let combined_warnings state =
-  state.config_warnings @ state.session_warnings
+let combined_warnings state = state.config_warnings @ state.session_warnings
 
 let warning_summary warnings =
   match warnings with
@@ -469,7 +461,7 @@ let run_command program arguments =
 let first_available_command candidates =
   candidates
   |> List.find_map (fun (name, arguments) ->
-         name |> find_executable |> Option.map (fun path -> (path, arguments)))
+      name |> find_executable |> Option.map (fun path -> (path, arguments)))
 
 let copy_to_clipboard text =
   let candidates =
@@ -494,8 +486,7 @@ let open_directory path =
   match first_available_command candidates with
   | None -> Error "no directory opener available"
   | Some (program, arguments) ->
-      arguments
-      |> run_command program
+      arguments |> run_command program
       |> Result.map (fun () -> Some ("opened " ^ path))
 
 let tool_check tool =
@@ -582,10 +573,8 @@ let execute_launch command =
 let execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
     ~config_warnings = function
   | Sessy_ui.Launch command -> command |> execute_launch
-  | Sessy_ui.Copy_to_clipboard _
-  | Sessy_ui.Open_directory _
-  | Sessy_ui.Reload_index
-  | Sessy_ui.Exit
+  | Sessy_ui.Copy_to_clipboard _ | Sessy_ui.Open_directory _
+  | Sessy_ui.Resolve_open_directory _ | Sessy_ui.Reload_index | Sessy_ui.Exit
   | Sessy_ui.Noop ->
       prerr_endline "unexpected interactive command reached the CLI shell";
       1
@@ -609,8 +598,7 @@ let execute_cmd ~index ~cwd ~repo_root ~now ~config_paths ~config
           1)
   | Sessy_ui.Resolve_resume (session_id, launch_mode) -> (
       match
-        resolve_launch_cmd ~config ~index
-          ~request:(Session_request session_id)
+        resolve_launch_cmd ~config ~index ~request:(Session_request session_id)
           ~active_profile:None ~launch_mode ~cwd ~repo_root ~now
       with
       | Ok command -> command |> execute_launch
@@ -648,8 +636,7 @@ let commands_need_sessions = function
   | Sessy_ui.Preview_session _ ->
       true
 
-let interactive_notice state =
-  state |> combined_warnings |> warning_summary
+let interactive_notice state = state |> combined_warnings |> warning_summary
 
 let interactive_reload_snapshot ~config_paths () =
   let state = load_runtime_state ~config_paths in
@@ -672,6 +659,23 @@ let run_picker ~config_paths ~cwd ~repo_root ~now =
       {
         copy_to_clipboard;
         open_directory;
+        open_session_directory =
+          (fun session_id ->
+            match
+              resolve_session_directory ~config:state.config ~index:state.index
+                ~session_id ~cwd
+            with
+            | Ok path -> path |> open_directory
+            | Error _ as error -> error);
+        resolve_launch =
+          (fun session_id launch_mode ->
+            resolve_launch_cmd ~config:state.config ~index:state.index
+              ~request:(Session_request session_id) ~active_profile:None
+              ~launch_mode ~cwd ~repo_root ~now);
+        resolve_preview =
+          (fun session_id ->
+            resolve_preview ~config:state.config ~index:state.index ~session_id
+              ~cwd ~active_profile:None);
         reload_snapshot = interactive_reload_snapshot ~config_paths;
       }
     in
@@ -705,8 +709,9 @@ let run_once ~argv ~config_paths ~cwd ~now =
         let config, config_warnings = load_config_from_paths config_paths in
 
         Sessy_ui.dispatch action Sessy_index.empty config ~cwd
-        |> execute_cmds ~index:Sessy_index.empty ~cwd ~repo_root:(detect_git_root cwd)
-             ~now ~config_paths ~config ~config_warnings
+        |> execute_cmds ~index:Sessy_index.empty ~cwd
+             ~repo_root:(detect_git_root cwd) ~now ~config_paths ~config
+             ~config_warnings
 
 let run () =
   let exit_status =

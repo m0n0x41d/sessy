@@ -2,11 +2,7 @@ open Sessy_domain
 
 type warnings = string list
 type scoped_profile = { section_tool : tool; profile : profile }
-
-type loader_state = {
-  config : config;
-  scoped_profiles : scoped_profile list;
-}
+type loader_state = { config : config; scoped_profiles : scoped_profile list }
 
 let tool_name = Tool.to_string
 let default_tool_order = [ Claude; Codex ]
@@ -66,31 +62,24 @@ let fallback_profile tool profile_name =
 let current_profile_for_section tool profile_name scoped_profiles =
   scoped_profiles
   |> List.find_opt (fun scoped_profile ->
-         Tool.equal scoped_profile.section_tool tool
-         && String.equal scoped_profile.profile.name profile_name)
+      Tool.equal scoped_profile.section_tool tool
+      && String.equal scoped_profile.profile.name profile_name)
   |> Option.map (fun scoped_profile -> scoped_profile.profile)
 
 let materialize_profiles scoped_profiles =
-  scoped_profiles
-  |> List.map (fun scoped_profile -> scoped_profile.profile)
+  scoped_profiles |> List.map (fun scoped_profile -> scoped_profile.profile)
 
 let with_config state config = { state with config }
 
 let with_scoped_profiles state scoped_profiles =
   let config =
-    {
-      state.config with
-      profiles = scoped_profiles |> materialize_profiles;
-    }
+    { state.config with profiles = scoped_profiles |> materialize_profiles }
   in
 
   { config; scoped_profiles }
 
 let scoped_profile_of_profile profile =
-  {
-    section_tool = profile.base_tool;
-    profile;
-  }
+  { section_tool = profile.base_tool; profile }
 
 let find_optional toml accessor field =
   if not (Otoml.path_exists toml field) then Ok None
@@ -405,8 +394,7 @@ let load_config_from_paths paths =
     {
       config = initial_config;
       scoped_profiles =
-        initial_config.profiles
-        |> List.map scoped_profile_of_profile;
+        initial_config.profiles |> List.map scoped_profile_of_profile;
     }
   in
 

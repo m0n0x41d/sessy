@@ -33,12 +33,10 @@ argv_append = ["--profile", "fast"]
 exec_mode = "exec"
 |}
   in
-  let invalid_override =
-    {|
+  let invalid_override = {|
 [profiles.claude.fast]
 argv_append = "skip"
-|}
-  in
+|} in
 
   with_temp_file base_config (fun base_path ->
       with_temp_file invalid_override (fun override_path ->
@@ -58,8 +56,7 @@ argv_append = "skip"
           check int "same section keeps one fast profile" 1
             (List.length fast_profiles);
           check (list string) "invalid override preserves Codex argv append"
-            [ "--profile"; "fast" ]
-            fast_profile.argv_append;
+            [ "--profile"; "fast" ] fast_profile.argv_append;
           check bool "invalid override preserves exec mode override" true
             (match fast_profile.exec_mode_override with
             | Some Exec -> true
@@ -67,16 +64,15 @@ argv_append = "skip"
           check bool "same-section warning recorded" true
             (warnings
             |> List.exists
-                 (contains_substring
-                    ~needle:"profiles.claude.fast.argv_append"))))
+                 (contains_substring ~needle:"profiles.claude.fast.argv_append")
+            )))
 
 let () =
   run "config loader profile identity"
     [
       ( "profiles",
         [
-          test_case "same section override keeps extends-derived profile"
-            `Quick
+          test_case "same section override keeps extends-derived profile" `Quick
             test_profile_fallback_preserves_section_identity_with_extends;
         ] );
     ]

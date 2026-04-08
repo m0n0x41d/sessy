@@ -14,10 +14,7 @@ type preview = {
   launch : (Sessy_domain.launch_cmd, string) result;
 }
 
-type terminal = {
-  width : int;
-  height : int;
-}
+type terminal = { width : int; height : int }
 
 type model = {
   index : Sessy_index.t;
@@ -27,7 +24,7 @@ type model = {
   cursor : int;
   preview_visible : bool;
   help_visible : bool;
-  active_profile : string option;
+  preview : preview option;
   cwd : string;
   repo_root : string option;
   now : float;
@@ -46,6 +43,7 @@ type cmd =
   | Launch of Sessy_domain.launch_cmd
   | Copy_to_clipboard of string
   | Open_directory of string
+  | Resolve_open_directory of Sessy_domain.Session_id.t
   | Reload_index
   | Exit
   | Noop
@@ -71,6 +69,7 @@ type msg =
   | Open_directory_requested
   | Reload_requested
   | Reload_finished of reload_snapshot
+  | Preview_loaded of preview option
   | Notice_set of string option
   | Window_resized of terminal
   | Quit
@@ -88,7 +87,6 @@ val init :
 val update : model -> msg -> model * cmd
 val view : model -> string
 val selected_preview : model -> preview option
-
 val parse_cli : string list -> (cli_action, string) result
 
 val dispatch :

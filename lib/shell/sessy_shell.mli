@@ -42,9 +42,13 @@ val doctor_report :
   string
 
 val spawn : Sessy_domain.launch_cmd -> (unit, [> `Exec_error of string ]) result
+
 val exec_replace :
   Sessy_domain.launch_cmd -> (unit, [> `Exec_error of string ]) result
+
 val print_cmd : Sessy_domain.launch_cmd -> unit
+
 val run_once :
   argv:string list -> config_paths:string list -> cwd:string -> now:float -> int
+
 val run : unit -> unit

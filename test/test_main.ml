@@ -121,12 +121,8 @@ let with_temp_file contents run =
 let rec remove_path path =
   if Sys.file_exists path then
     if Sys.is_directory path then (
-      path
-      |> Sys.readdir
-      |> Array.iter (fun entry ->
-             entry
-             |> Filename.concat path
-             |> remove_path);
+      path |> Sys.readdir
+      |> Array.iter (fun entry -> entry |> Filename.concat path |> remove_path);
       Unix.rmdir path)
     else Sys.remove path
 
@@ -941,21 +937,58 @@ let make_tui_model () =
   let index = Sessy_index.build [ other; current ] in
   let model =
     Sessy_ui.init index config ~cwd:"/repo/worktree" ~repo_root:(Some "/repo")
-      ~now:120. ~terminal:{ Sessy_ui.width = 120; height = 18 } ~notice:None
+      ~now:120.
+      ~terminal:{ Sessy_ui.width = 120; height = 18 }
+      ~notice:None
   in
 
   (model, current, other)
 
+let make_tui_preview session =
+  let hydrated_session =
+    {
+      session with
+      cwd = "/hydrated/worktree";
+      first_prompt = Some "Hydrated preview prompt";
+    }
+  in
+
+  {
+    Sessy_ui.session = hydrated_session;
+    launch =
+      Ok
+        {
+          argv = ("claude", [ "--resume"; "abc12345zz" ]);
+          cwd = hydrated_session.cwd;
+          exec_mode = Spawn;
+          display = "claude --resume abc12345zz";
+        };
+  }
+
 let test_tui_update_behaviour () =
   let model, current, other = make_tui_model () in
+  let preview = current |> make_tui_preview in
+  let model_with_preview, preview_load_cmd =
+    Sessy_ui.update model (Sessy_ui.Preview_loaded (Some preview))
+  in
   let filtered_model, filtered_cmd =
     Sessy_ui.update model (Sessy_ui.Query_changed "Other")
   in
-  let moved_model, moved_cmd = Sessy_ui.update model (Sessy_ui.Cursor_moved 1) in
+  let moved_model, moved_cmd =
+    Sessy_ui.update model (Sessy_ui.Cursor_moved 1)
+  in
+  let preview_cleared_model, _ =
+    Sessy_ui.update model_with_preview (Sessy_ui.Cursor_moved 1)
+  in
   let preview_model, preview_cmd =
     Sessy_ui.update model Sessy_ui.Preview_toggled
   in
-  let copy_model, copy_cmd = Sessy_ui.update moved_model Sessy_ui.Copy_requested in
+  let copy_model, copy_cmd =
+    Sessy_ui.update moved_model Sessy_ui.Copy_requested
+  in
+  let open_model, open_cmd =
+    Sessy_ui.update moved_model Sessy_ui.Open_directory_requested
+  in
   let reload_model, reload_cmd =
     Sessy_ui.update model Sessy_ui.Reload_requested
   in
@@ -968,30 +1001,44 @@ let test_tui_update_behaviour () =
   check bool "query keeps the matching session visible" true
     (filtered_model.results
     |> List.exists (fun ranked ->
-           String.equal "def67890yy" (Session_id.to_string ranked.session.id)));
+        String.equal "def67890yy" (Session_id.to_string ranked.session.id)));
   check bool "query change stays pure" true
     (match filtered_cmd with Sessy_ui.Noop -> true | _ -> false);
+  check bool "preview load stays pure" true
+    (match preview_load_cmd with Sessy_ui.Noop -> true | _ -> false);
+  check string "preview load caches hydrated cwd" "/hydrated/worktree"
+    ( model_with_preview.preview |> require_some "expected loaded preview"
+    |> fun preview -> preview.session.cwd );
   check int "cursor move selects second session" 1 moved_model.cursor;
   check bool "cursor move stays pure" true
     (match moved_cmd with Sessy_ui.Noop -> true | _ -> false);
+  check bool "cursor move clears cached preview" true
+    (Option.is_none preview_cleared_model.preview);
   check bool "preview toggles off" false preview_model.preview_visible;
   check bool "preview toggle stays pure" true
     (match preview_cmd with Sessy_ui.Noop -> true | _ -> false);
-  check bool "copy request clears notices" true (Option.is_none copy_model.notice);
+  check bool "copy request clears notices" true
+    (Option.is_none copy_model.notice);
   check bool "copy request emits selected id" true
     (match copy_cmd with
     | Sessy_ui.Copy_to_clipboard session_id ->
         String.equal session_id (Session_id.to_string other.id)
     | _ -> false);
+  check bool "open request clears notices" true
+    (Option.is_none open_model.notice);
+  check bool "open request resolves selected session in shell" true
+    (match open_cmd with
+    | Sessy_ui.Resolve_open_directory session_id ->
+        Session_id.equal session_id other.id
+    | _ -> false);
   check string "reload request sets status text" "reloading sessions..."
     (reload_model.notice |> require_some "expected reload notice");
   check bool "reload request emits command" true
     (match reload_cmd with Sessy_ui.Reload_index -> true | _ -> false);
-  check bool "session selection emits launch" true
+  check bool "session selection resolves in shell" true
     (match launch_cmd with
-    | Sessy_ui.Launch command ->
-        command.argv = ("claude", [ "--resume"; "abc12345zz" ])
-        && String.equal command.cwd current.cwd
+    | Sessy_ui.Resolve_resume (session_id, Sessy_ui.Default) ->
+        Session_id.equal session_id current.id
     | _ -> false);
   check bool "launch clears notice" true (Option.is_none launch_model.notice);
   check bool "quit exits" true
@@ -1000,18 +1047,38 @@ let test_tui_update_behaviour () =
 
 let test_tui_view_rendering () =
   let model, _, _ = make_tui_model () in
-  let wide = Sessy_ui.view model in
-  let narrow_model, _ =
+  let preview_model, _ =
     Sessy_ui.update model
+      (Sessy_ui.Preview_loaded
+         (Some
+            {
+              Sessy_ui.session =
+                make_session ~updated_at:60. ~title:"Fix ranking"
+                  ~first_prompt:"Hydrated preview prompt"
+                  ~cwd:"/hydrated/worktree" "abc12345zz";
+              launch =
+                Ok
+                  {
+                    argv = ("claude", [ "--resume"; "abc12345zz" ]);
+                    cwd = "/hydrated/worktree";
+                    exec_mode = Spawn;
+                    display = "claude --resume abc12345zz";
+                  };
+            }))
+  in
+  let wide = Sessy_ui.view preview_model in
+  let narrow_model, _ =
+    Sessy_ui.update preview_model
       (Sessy_ui.Window_resized { Sessy_ui.width = 80; height = 18 })
   in
   let narrow = Sessy_ui.view narrow_model in
-  let help_model, _ = Sessy_ui.update model Sessy_ui.Help_toggled in
+  let help_model, _ = Sessy_ui.update preview_model Sessy_ui.Help_toggled in
   let help_view = Sessy_ui.view help_model in
 
   check_contains "wide view shows preview title" wide "Preview";
   check_contains "wide view shows launch preview" wide
     "launch: claude --resume abc12345zz";
+  check_contains "wide view uses hydrated preview cwd" wide "/hydrated/worktree";
   check_contains "wide view shows query placeholder" wide "<type to filter>";
   check bool "narrow view hides preview pane" false
     (contains_substring ~needle:"launch: claude --resume abc12345zz" narrow);
@@ -1142,12 +1209,10 @@ let test_shell_profile_override_stays_scoped_to_section_tool () =
 argv_append = ["--profile", "fast"]
 |}
   in
-  let invalid_override =
-    {|
+  let invalid_override = {|
 [profiles.claude.fast]
 argv_append = "skip"
-|}
-  in
+|} in
 
   with_temp_file base_config (fun base_path ->
       with_temp_file invalid_override (fun override_path ->
@@ -1157,28 +1222,27 @@ argv_append = "skip"
           let codex_fast =
             config.profiles
             |> List.find_opt (fun profile ->
-                   Tool.equal profile.base_tool Codex
-                   && String.equal profile.name "fast")
+                Tool.equal profile.base_tool Codex
+                && String.equal profile.name "fast")
             |> require_some "expected codex fast profile"
           in
           let claude_fast =
             config.profiles
             |> List.find_opt (fun profile ->
-                   Tool.equal profile.base_tool Claude
-                   && String.equal profile.name "fast")
+                Tool.equal profile.base_tool Claude
+                && String.equal profile.name "fast")
             |> require_some "expected claude fast profile"
           in
 
           check (list string) "codex profile stays untouched"
-            [ "--profile"; "fast" ]
-            codex_fast.argv_append;
+            [ "--profile"; "fast" ] codex_fast.argv_append;
           check (list string) "claude profile falls back to empty args" []
             claude_fast.argv_append;
           check bool "section-scoped warning recorded" true
             (warnings
             |> List.exists
-                 (contains_substring
-                    ~needle:"profiles.claude.fast.argv_append"))))
+                 (contains_substring ~needle:"profiles.claude.fast.argv_append")
+            )))
 
 let test_shell_load_sessions_is_tolerant () =
   let config =
@@ -1215,8 +1279,7 @@ let test_shell_resolve_launch_hydrates_codex_detail () =
   let session_id = require_session_id "01999f1e-084e-77d3-9b2d-5a2692a779d5" in
   let command =
     Sessy_shell.resolve_launch_cmd ~config ~index
-      ~request:(Sessy_shell.Session_request session_id)
-      ~active_profile:None
+      ~request:(Sessy_shell.Session_request session_id) ~active_profile:None
       ~launch_mode:Sessy_ui.Dry_run ~cwd:"/tmp/fallback"
       ~repo_root:(Some "/Users/example/Repos/projects/sessy")
       ~now:1_900_000_000.
@@ -1230,8 +1293,7 @@ let test_shell_resolve_launch_hydrates_codex_detail () =
     ("codex", [ "resume"; "01999f1e-084e-77d3-9b2d-5a2692a779d5" ])
     command.argv;
   check string "Codex launch uses hydrated detail cwd"
-    "/Users/example/Repos/projects/sessy"
-    command.cwd;
+    "/Users/example/Repos/projects/sessy" command.cwd;
   check bool "dry-run forces print mode" true
     (match command.exec_mode with Print -> true | Spawn | Exec -> false)
 
@@ -1264,8 +1326,7 @@ let test_shell_resolve_launch_uses_single_profile_for_cli () =
   let index = Sessy_index.build [ session ] in
   let command =
     Sessy_shell.resolve_launch_cmd ~config ~index
-      ~request:(Sessy_shell.Session_request session.id)
-      ~active_profile:None
+      ~request:(Sessy_shell.Session_request session.id) ~active_profile:None
       ~launch_mode:Sessy_ui.Dry_run ~cwd:"/tmp/fallback" ~repo_root:None
       ~now:1_900_000_000.
     |> require_ok "expected CLI launch to resolve a single configured profile"
@@ -1289,8 +1350,7 @@ let test_shell_resolve_preview_hydrates_detail () =
   in
 
   check string "preview hydrates cwd from Codex detail"
-    "/Users/example/Repos/projects/sessy"
-    preview.session.cwd;
+    "/Users/example/Repos/projects/sessy" preview.session.cwd;
   check string "preview hydrates model from Codex detail" "gpt-5-codex"
     (preview.session.model |> require_some "expected model");
   check string "preview hydrates first prompt from Codex detail"
@@ -1306,14 +1366,15 @@ let test_shell_resolve_preview_hydrates_detail () =
 let test_shell_resolve_last_prefers_repo_ranking () =
   let config = Sessy_core.default_config in
   let repo_session = make_session ~cwd:"/repo/lib" ~updated_at:100. "repo-1" in
-  let global_session = make_session ~cwd:"/outside" ~updated_at:500. "other-1" in
+  let global_session =
+    make_session ~cwd:"/outside" ~updated_at:500. "other-1"
+  in
   let index = Sessy_index.build [ global_session; repo_session ] in
   let command =
     Sessy_shell.resolve_launch_cmd ~config ~index
-      ~request:Sessy_shell.Last_request
-      ~active_profile:None
-      ~launch_mode:Sessy_ui.Dry_run ~cwd:"/repo/app"
-      ~repo_root:(Some "/repo") ~now:1_000.
+      ~request:Sessy_shell.Last_request ~active_profile:None
+      ~launch_mode:Sessy_ui.Dry_run ~cwd:"/repo/app" ~repo_root:(Some "/repo")
+      ~now:1_000.
     |> require_ok "expected last command to resolve"
   in
 
@@ -1355,16 +1416,16 @@ let test_shell_copy_to_clipboard_delivers_eof () =
                            In_channel.input_all)
                   | Ok status ->
                       fail
-                        (Printf.sprintf "clipboard helper exited unexpectedly: %s"
+                        (Printf.sprintf
+                           "clipboard helper exited unexpectedly: %s"
                            (match status with
-                           | Unix.WEXITED code ->
-                               Printf.sprintf "exit %d" code
+                           | Unix.WEXITED code -> Printf.sprintf "exit %d" code
                            | Unix.WSIGNALED signal ->
                                Printf.sprintf "signal %d" signal
                            | Unix.WSTOPPED signal ->
                                Printf.sprintf "stopped %d" signal))
-                  | Error _ ->
-                      fail "clipboard helper timed out waiting for EOF"))))
+                  | Error _ -> fail "clipboard helper timed out waiting for EOF"
+                  ))))
 
 let test_doctor_report () =
   let config = fixture_runtime_config () in

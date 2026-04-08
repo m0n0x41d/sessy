@@ -12,11 +12,7 @@ type cli_action =
   | Doctor
 
 type preview = { session : session; launch : (launch_cmd, string) result }
-
-type terminal = {
-  width : int;
-  height : int;
-}
+type terminal = { width : int; height : int }
 
 type model = {
   index : Sessy_index.t;
@@ -26,7 +22,7 @@ type model = {
   cursor : int;
   preview_visible : bool;
   help_visible : bool;
-  active_profile : string option;
+  preview : preview option;
   cwd : string;
   repo_root : string option;
   now : float;
@@ -45,6 +41,7 @@ type cmd =
   | Launch of launch_cmd
   | Copy_to_clipboard of string
   | Open_directory of string
+  | Resolve_open_directory of Session_id.t
   | Reload_index
   | Exit
   | Noop
@@ -70,6 +67,7 @@ type msg =
   | Open_directory_requested
   | Reload_requested
   | Reload_finished of reload_snapshot
+  | Preview_loaded of preview option
   | Notice_set of string option
   | Window_resized of terminal
   | Quit
@@ -88,9 +86,7 @@ let ansi_reset = "\027[0m"
 let ansi_bold = "\027[1m"
 let ansi_dim = "\027[2m"
 let ansi_inverse = "\027[7m"
-
-let style style text =
-  [ style; text; ansi_reset ] |> String.concat ""
+let style style text = [ style; text; ansi_reset ] |> String.concat ""
 
 let empty_args =
   { dry_run = false; json = false; positionals = []; unknown_flags = [] }
@@ -146,11 +142,11 @@ let parse_cli = function
               | [ session_id ] ->
                   session_id |> parse_session_id
                   |> Result.map (fun parsed ->
-                         let launch_mode =
-                           if args.dry_run then Dry_run else Default
-                         in
+                      let launch_mode =
+                        if args.dry_run then Dry_run else Default
+                      in
 
-                         Resume_id (parsed, launch_mode))
+                      Resume_id (parsed, launch_mode))
               | [] -> Error "resume requires a session id"
               | _ -> Error "resume accepts exactly one session id")
         | "preview" -> (
@@ -175,56 +171,10 @@ let parse_cli = function
             else Ok Doctor
         | unknown -> Error ("unknown command: " ^ unknown))
 
-let config_error_message = function
-  | File_not_found path -> Printf.sprintf "file not found: %s" path
-  | Parse_failed message -> message
-  | Invalid_value (field, message) -> Printf.sprintf "%s: %s" field message
-
-let lookup_launch (config : config) tool =
-  config.launches
-  |> List.find_map (fun (candidate, launch) ->
-         if Tool.equal candidate tool then Some launch else None)
-  |> function
-  | Some launch -> Ok launch
-  | None ->
-      tool |> Tool.to_string
-      |> Printf.sprintf "missing launch template for %s"
-      |> Result.error
-
-let lookup_profile (config : config) active_profile tool =
-  Option.bind active_profile (fun profile_name ->
-      config.profiles
-      |> List.find_opt (fun profile ->
-             String.equal profile.name profile_name
-             && Tool.equal profile.base_tool tool))
-
-let launch_for_session (config : config) active_profile (session : session) =
-  match lookup_launch config session.tool with
-  | Error _ as error -> error
-  | Ok launch ->
-      let profile =
-        session.tool |> lookup_profile config active_profile
-      in
-
-      launch
-      |> Sessy_core.expand_template session profile
-      |> Result.map_error config_error_message
-
-let apply_launch_mode launch_mode launch =
-  match launch_mode with
-  | Default -> launch
-  | Dry_run -> { launch with exec_mode = Print }
-
-let prepare_launch launch_mode config active_profile session =
-  session |> launch_for_session config active_profile
-  |> Result.map (apply_launch_mode launch_mode)
-
-let preview_for_session config active_profile session =
-  { session; launch = session |> launch_for_session config active_profile }
-
 let dispatch action index _config ~cwd:_ =
   match action with
-  | Open_picker -> [ Print_notice "interactive mode requires the shell runtime" ]
+  | Open_picker ->
+      [ Print_notice "interactive mode requires the shell runtime" ]
   | List_sessions output_format ->
       [ Print_sessions (Sessy_index.all_sessions index, output_format) ]
   | Resume_last launch_mode -> [ Resolve_last launch_mode ]
@@ -325,12 +275,7 @@ let normalize_terminal terminal =
   }
 
 let default_query config =
-  {
-    text = "";
-    scope = config.default_scope;
-    tool_filter = None;
-    mode = Meta;
-  }
+  { text = ""; scope = config.default_scope; tool_filter = None; mode = Meta }
 
 let search_results index query ~now ~cwd ~repo_root =
   Sessy_index.search index query ~now ~cwd ~repo_root
@@ -361,7 +306,7 @@ let init index config ~cwd ~repo_root ~now ~terminal ~notice =
     cursor = 0;
     preview_visible = config.preview;
     help_visible = false;
-    active_profile = None;
+    preview = None;
     cwd;
     repo_root;
     now;
@@ -369,42 +314,21 @@ let init index config ~cwd ~repo_root ~now ~terminal ~notice =
     notice;
   }
 
-let scope_label = function
-  | Cwd -> "cwd"
-  | Repo -> "repo"
-  | All -> "all"
+let scope_label = function Cwd -> "cwd" | Repo -> "repo" | All -> "all"
 
 let tool_filter_label = function
   | None -> "all"
   | Some tool -> Tool.to_string tool
 
-let search_mode_label = function
-  | Meta -> "meta"
-  | Deep -> "deep"
-
-let cycle_scope = function
-  | Cwd -> Repo
-  | Repo -> All
-  | All -> Cwd
+let search_mode_label = function Meta -> "meta" | Deep -> "deep"
+let cycle_scope = function Cwd -> Repo | Repo -> All | All -> Cwd
 
 let cycle_tool_filter = function
   | None -> Some Claude
   | Some Claude -> Some Codex
   | Some Codex -> None
 
-let cycle_search_mode = function
-  | Meta -> Deep
-  | Deep -> Meta
-
-let profile_still_exists config active_profile =
-  match active_profile with
-  | None -> None
-  | Some profile_name ->
-      config.profiles
-      |> List.exists (fun profile -> String.equal profile.name profile_name)
-      |> function
-      | true -> Some profile_name
-      | false -> None
+let cycle_search_mode = function Meta -> Deep | Deep -> Meta
 
 let selected_ranked (model : model) : ranked option =
   List.nth_opt model.results model.cursor
@@ -414,23 +338,13 @@ let selected_session (model : model) : session option =
   | Some ranked -> Some ranked.session
   | None -> None
 
-let selected_preview (model : model) : preview option =
-  match selected_session model with
-  | Some session ->
-      Some (preview_for_session model.config model.active_profile session)
-  | None -> None
-
-let with_notice model notice =
-  { model with notice }
+let selected_preview (model : model) : preview option = model.preview
+let with_notice model notice = { model with notice }
+let clear_preview model = { model with preview = None }
 
 let update_query model text =
-  {
-    model with
-    query = { model.query with text };
-    cursor = 0;
-    notice = None;
-  }
-  |> rerun_search
+  { model with query = { model.query with text }; cursor = 0; notice = None }
+  |> clear_preview |> rerun_search
 
 let update_scope model =
   {
@@ -439,7 +353,7 @@ let update_scope model =
     cursor = 0;
     notice = None;
   }
-  |> rerun_search
+  |> clear_preview |> rerun_search
 
 let update_tool_filter model =
   {
@@ -452,7 +366,7 @@ let update_tool_filter model =
     cursor = 0;
     notice = None;
   }
-  |> rerun_search
+  |> clear_preview |> rerun_search
 
 let update_search_mode model =
   let mode = model.query.mode |> cycle_search_mode in
@@ -462,28 +376,26 @@ let update_search_mode model =
     | Deep -> Some "deep search is metadata-backed in this build"
   in
 
-  {
-    model with
-    query = { model.query with mode };
-    cursor = 0;
-    notice;
-  }
-  |> rerun_search
+  { model with query = { model.query with mode }; cursor = 0; notice }
+  |> clear_preview |> rerun_search
 
 let update_cursor model delta =
   let maximum =
     model.results |> List.length |> fun count -> Int.max 0 (count - 1)
   in
 
-  { model with cursor = model.cursor + delta |> clamp_int 0 maximum; notice = None }
+  {
+    model with
+    cursor = model.cursor + delta |> clamp_int 0 maximum;
+    notice = None;
+  }
+  |> clear_preview
 
 let update_session_selected model =
   match model |> selected_session with
   | None -> (with_notice model (Some "no session selected"), Noop)
-  | Some session -> (
-      match prepare_launch Default model.config model.active_profile session with
-      | Ok launch -> ({ model with notice = None }, Launch launch)
-      | Error message -> (with_notice model (Some message), Noop))
+  | Some session ->
+      ({ model with notice = None }, Resolve_resume (session.id, Default))
 
 let update_copy_requested model =
   match model |> selected_session with
@@ -496,22 +408,18 @@ let update_copy_requested model =
 let update_open_directory_requested model =
   match model |> selected_session with
   | None -> (with_notice model (Some "no session selected"), Noop)
-  | Some session -> ({ model with notice = None }, Open_directory session.cwd)
+  | Some session ->
+      ({ model with notice = None }, Resolve_open_directory session.id)
 
 let update_reload_finished model snapshot =
-  let active_profile =
-    profile_still_exists snapshot.config model.active_profile
-  in
-
   {
     model with
     index = snapshot.index;
     config = snapshot.config;
     now = snapshot.now;
-    active_profile;
     notice = snapshot.warning;
   }
-  |> rerun_search
+  |> clear_preview |> rerun_search
 
 let update model = function
   | Query_changed text -> (update_query model text, Noop)
@@ -520,14 +428,17 @@ let update model = function
   | Tool_filter_toggled -> (update_tool_filter model, Noop)
   | Search_mode_toggled -> (update_search_mode model, Noop)
   | Preview_toggled ->
-      ({ model with preview_visible = not model.preview_visible; notice = None }, Noop)
+      ( { model with preview_visible = not model.preview_visible; notice = None },
+        Noop )
   | Help_toggled ->
       ({ model with help_visible = not model.help_visible; notice = None }, Noop)
   | Session_selected -> update_session_selected model
   | Copy_requested -> update_copy_requested model
   | Open_directory_requested -> update_open_directory_requested model
-  | Reload_requested -> ({ model with notice = Some "reloading sessions..." }, Reload_index)
+  | Reload_requested ->
+      ({ model with notice = Some "reloading sessions..." }, Reload_index)
   | Reload_finished snapshot -> (update_reload_finished model snapshot, Noop)
+  | Preview_loaded preview -> ({ model with preview }, Noop)
   | Notice_set notice -> (with_notice model notice, Noop)
   | Window_resized terminal ->
       ({ model with terminal = terminal |> normalize_terminal }, Noop)
@@ -571,11 +482,10 @@ let query_display text =
 let header_lines model =
   [
     Printf.sprintf "sessy  query: %s" (query_display model.query.text);
-    Printf.sprintf "scope:%s  tool:%s  mode:%s  profile:%s  results:%d"
+    Printf.sprintf "scope:%s  tool:%s  mode:%s  results:%d"
       (scope_label model.query.scope)
       (tool_filter_label model.query.tool_filter)
       (search_mode_label model.query.mode)
-      (model.active_profile |> Option.value ~default:"-")
       (List.length model.results);
   ]
 
@@ -583,12 +493,15 @@ let footer_lines model =
   match model.help_visible with
   | false ->
       [
-        "Enter resume | Tab preview | Ctrl-Y copy | Ctrl-O open | Ctrl-S scope | Ctrl-T tool | Ctrl-F deep | Ctrl-R reload | ? help | Esc quit";
+        "Enter resume | Tab preview | Ctrl-Y copy | Ctrl-O open | Ctrl-S scope \
+         | Ctrl-T tool | Ctrl-F deep | Ctrl-R reload | ? help | Esc quit";
       ]
   | true ->
       [
-        "Shortcuts: Enter resume | Up/Down move | Tab preview | Ctrl-Y copy id | Ctrl-O open cwd";
-        "Scope/tool/mode: Ctrl-S cycle scope | Ctrl-T cycle tool | Ctrl-F toggle deep | Ctrl-R reload | ? hide help | Esc quit";
+        "Shortcuts: Enter resume | Up/Down move | Tab preview | Ctrl-Y copy id \
+         | Ctrl-O open cwd";
+        "Scope/tool/mode: Ctrl-S cycle scope | Ctrl-T cycle tool | Ctrl-F \
+         toggle deep | Ctrl-R reload | ? hide help | Esc quit";
       ]
 
 let notice_lines model =
@@ -600,8 +513,7 @@ let row_text (model : model) (ranked : ranked) =
   let session = ranked.session in
   let marker = if session.is_active then "*" else " " in
 
-  Printf.sprintf "%s [%s] %s %s %s %s"
-    marker
+  Printf.sprintf "%s [%s] %s %s %s %s" marker
     (Tool.to_string session.tool)
     (Session_id.short session.id)
     (title_or_placeholder session)
@@ -628,11 +540,11 @@ let list_lines model width height =
       let rendered =
         rows
         |> List.mapi (fun offset ranked ->
-               let index = start + offset in
-               let text = row_text model ranked |> pad width in
+            let index = start + offset in
+            let text = row_text model ranked |> pad width in
 
-               if Int.equal index model.cursor then text |> style ansi_inverse
-               else text)
+            if Int.equal index model.cursor then text |> style ansi_inverse
+            else text)
       in
 
       rendered @ lines_of_count (height - List.length rendered)
@@ -649,19 +561,21 @@ let preview_lines (model : model) width height =
     | None -> [ "No session selected." |> pad width ]
   in
 
-  (title :: body) |> take height |> fun lines ->
+  title :: body |> take height |> fun lines ->
   lines @ lines_of_count (height - List.length lines)
 
 let render_single_pane model width body_height =
   list_lines model width body_height
 
 let render_split_panes model width body_height =
-  let left_width = ((width * 3) / 5) - 2 |> Int.max 30 in
+  let left_width = (width * 3 / 5) - 2 |> Int.max 30 in
   let right_width = width - left_width - 3 |> Int.max 20 in
   let left = list_lines model left_width body_height in
   let right = preview_lines model right_width body_height in
 
-  List.map2 (fun left_line right_line -> left_line ^ " | " ^ right_line) left right
+  List.map2
+    (fun left_line right_line -> left_line ^ " | " ^ right_line)
+    left right
 
 let preview_enabled model =
   model.preview_visible && model.terminal.width >= preview_threshold_width
@@ -674,16 +588,12 @@ let body_lines model body_height =
 let view model =
   let width = model.terminal.width in
   let header =
-    model |> header_lines
-    |> List.map (pad width)
-    |> function
+    model |> header_lines |> List.map (pad width) |> function
     | [] -> []
     | first :: tail -> (first |> style ansi_bold) :: tail
   in
   let footer =
-    model |> footer_lines
-    |> List.map (pad width)
-    |> List.map (style ansi_dim)
+    model |> footer_lines |> List.map (pad width) |> List.map (style ansi_dim)
   in
   let notices = model |> notice_lines |> List.map (pad width) in
   let reserved =
@@ -692,8 +602,4 @@ let view model =
   let body_height = model.terminal.height - reserved |> Int.max 3 in
   let body = body_lines model body_height in
 
-  header
-  @ body
-  @ notices
-  @ footer
-  |> String.concat "\n"
+  header @ body @ notices @ footer |> String.concat "\n"
