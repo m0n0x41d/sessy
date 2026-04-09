@@ -1,3 +1,7 @@
+(env
+ (linux_static
+  (link_flags (-ccopt -static -cclib -static))))
+
 (executable
  (name main)
  (public_name sessy)

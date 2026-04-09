@@ -26,7 +26,7 @@ mkdir -p "$PACKAGE_DIR"
 
 cd "$ROOT"
 
-dune build --profile release ./bin/main.exe
+dune build --profile linux_static ./bin/main.exe
 
 cp "$ROOT/_build/default/bin/main.exe" "$TARGET_PATH"
 strip --strip-unneeded "$TARGET_PATH" 2>/dev/null || true
