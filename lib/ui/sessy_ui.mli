@@ -87,6 +87,7 @@ val init :
 val update : model -> msg -> model * cmd
 val view : model -> string
 val selected_preview : model -> preview option
+val preview_enabled : model -> bool
 val parse_cli : string list -> (cli_action, string) result
 
 val dispatch :

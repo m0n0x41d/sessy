@@ -87,7 +87,7 @@ let preview_is_current (model : Sessy_ui.model) session_id =
   | None -> false
 
 let sync_preview handlers (model : Sessy_ui.model) =
-  if not model.preview_visible then model
+  if not (Sessy_ui.preview_enabled model) then model
   else
     match selected_session_id model with
     | None -> Sessy_ui.update model (Sessy_ui.Preview_loaded None) |> fst

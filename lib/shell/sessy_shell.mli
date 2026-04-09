@@ -13,6 +13,12 @@ type launch_request =
   | Last_request
   | Session_request of Sessy_domain.Session_id.t
 
+type runtime_handlers = Runtime.handlers
+
+type runtime_outcome = Runtime.outcome =
+  | Continue of Sessy_ui.model
+  | Finish of [ `Exit | `Launch of Sessy_domain.launch_cmd ]
+
 val resolve_launch_cmd :
   config:Sessy_domain.config ->
   index:Sessy_index.t ->
@@ -47,6 +53,11 @@ val exec_replace :
   Sessy_domain.launch_cmd -> (unit, [> `Exec_error of string ]) result
 
 val print_cmd : Sessy_domain.launch_cmd -> unit
+
+val runtime_step :
+  runtime_handlers -> Sessy_ui.model -> Sessy_ui.msg -> runtime_outcome
+
+val runtime_sync_preview : runtime_handlers -> Sessy_ui.model -> Sessy_ui.model
 
 val run_once :
   argv:string list -> config_paths:string list -> cwd:string -> now:float -> int

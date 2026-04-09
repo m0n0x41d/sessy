@@ -50,8 +50,7 @@ let test_cross_tool_extends_falls_back_to_section_identity () =
     warning
     |> contains_substring
          ~needle:"cross-tool extends=\"codex\" is unsupported; expected claude"
-    && (warning
-       |> contains_substring ~needle:"profiles.claude.fast.extends")
+    && warning |> contains_substring ~needle:"profiles.claude.fast.extends"
   in
   let raw_config =
     {|
@@ -106,9 +105,9 @@ argv_append = ["--profile", "claude-fast"]
       in
       let command =
         Sessy_shell.resolve_launch_cmd ~config ~index
-          ~request:(Sessy_shell.Session_request session.id)
-          ~active_profile:None ~launch_mode:Sessy_ui.Dry_run
-          ~cwd:"/tmp/fallback" ~repo_root:None ~now:1_900_000_000.
+          ~request:(Sessy_shell.Session_request session.id) ~active_profile:None
+          ~launch_mode:Sessy_ui.Dry_run ~cwd:"/tmp/fallback" ~repo_root:None
+          ~now:1_900_000_000.
         |> require_ok "expected codex launch to resolve deterministically"
       in
 
@@ -135,8 +134,7 @@ argv_append = ["--profile", "claude-fast"]
           ] )
         command.argv;
       check bool "cross-tool extends warning recorded" true
-        (warnings
-        |> List.exists has_cross_tool_warning))
+        (warnings |> List.exists has_cross_tool_warning))
 
 let () =
   run "config loader profile identity"

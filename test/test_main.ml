@@ -965,6 +965,54 @@ let make_tui_preview session =
         };
   }
 
+let make_runtime_handlers ~state_ref ~reloaded_state ~preview_requests =
+  let handlers : Sessy_shell.runtime_handlers =
+    {
+      copy_to_clipboard = (fun _text -> Ok None);
+      open_directory = (fun _path -> Ok None);
+      open_session_directory =
+        (fun session_id ->
+          let index, _config = !state_ref in
+
+          match Sessy_index.find_by_id index session_id with
+          | Some session -> Ok (Some session.cwd)
+          | None -> Error "session not found");
+      resolve_launch =
+        (fun session_id _launch_mode ->
+          let index, _config = !state_ref in
+
+          match Sessy_index.find_by_id index session_id with
+          | Some session ->
+              Ok
+                {
+                  argv = ("echo", [ Session_id.to_string session.id ]);
+                  cwd = session.cwd;
+                  exec_mode = Print;
+                  display = Session_id.to_string session.id;
+                }
+          | None -> Error "session not found");
+      resolve_preview =
+        (fun session_id ->
+          preview_requests := session_id :: !preview_requests;
+
+          let index, _config = !state_ref in
+
+          match Sessy_index.find_by_id index session_id with
+          | Some session ->
+              Ok { Sessy_ui.session; launch = Error "preview only" }
+          | None -> Error "session not found");
+      reload_snapshot =
+        (fun () ->
+          let index, config = reloaded_state in
+
+          state_ref := reloaded_state;
+
+          Ok { index; config; now = 130.; warning = None });
+    }
+  in
+
+  handlers
+
 let test_tui_update_behaviour () =
   let model, current, other = make_tui_model () in
   let preview = current |> make_tui_preview in
@@ -1083,6 +1131,89 @@ let test_tui_view_rendering () =
   check bool "narrow view hides preview pane" false
     (contains_substring ~needle:"launch: claude --resume abc12345zz" narrow);
   check_contains "help toggle shows shortcuts overlay" help_view "Shortcuts:"
+
+let test_runtime_reload_refreshes_resolver_state () =
+  let initial_session =
+    make_session ~updated_at:60. ~title:"Initial session" ~cwd:"/repo/old"
+      "old-session-1"
+  in
+  let reloaded_session =
+    make_session ~updated_at:90. ~title:"Reloaded session" ~cwd:"/repo/new"
+      "new-session-1"
+  in
+  let config = Sessy_core.default_config in
+  let initial_index = Sessy_index.build [ initial_session ] in
+  let reloaded_index = Sessy_index.build [ reloaded_session ] in
+  let state_ref = ref (initial_index, config) in
+  let preview_requests = ref [] in
+  let handlers =
+    make_runtime_handlers ~state_ref ~reloaded_state:(reloaded_index, config)
+      ~preview_requests
+  in
+  let model =
+    Sessy_ui.init initial_index config ~cwd:"/repo/worktree"
+      ~repo_root:(Some "/repo") ~now:120.
+      ~terminal:{ Sessy_ui.width = 120; height = 18 }
+      ~notice:None
+  in
+  let reloaded_model =
+    match Sessy_shell.runtime_step handlers model Sessy_ui.Reload_requested with
+    | Sessy_shell.Continue model -> model
+    | Sessy_shell.Finish _ -> fail "reload should keep the picker running"
+  in
+
+  check_session_ids "reload updates the visible session list"
+    [ "new-session-1" ]
+    (reloaded_model.results |> List.map (fun ranked -> ranked.session));
+
+  match
+    Sessy_shell.runtime_step handlers reloaded_model Sessy_ui.Session_selected
+  with
+  | Sessy_shell.Finish (`Launch command) ->
+      check
+        (pair string (list string))
+        "launch resolution uses the refreshed runtime state"
+        ("echo", [ "new-session-1" ])
+        command.argv;
+      check string "launch uses reloaded session cwd" "/repo/new" command.cwd
+  | Sessy_shell.Continue model ->
+      let notice =
+        model.notice |> require_some "expected reload resolver notice"
+      in
+
+      fail ("expected launch after reload, got notice: " ^ notice)
+  | Sessy_shell.Finish `Exit -> fail "session selection should not exit"
+
+let test_runtime_sync_preview_skips_hidden_pane () =
+  let model, current, _other = make_tui_model () in
+  let preview_requests = ref [] in
+  let state_ref = ref (model.index, model.config) in
+  let handlers =
+    make_runtime_handlers ~state_ref
+      ~reloaded_state:(model.index, model.config)
+      ~preview_requests
+  in
+  let narrow_model, _command =
+    Sessy_ui.update model
+      (Sessy_ui.Window_resized { Sessy_ui.width = 80; height = 18 })
+  in
+  let synced_narrow_model =
+    Sessy_shell.runtime_sync_preview handlers narrow_model
+  in
+
+  check bool "narrow picker does not render preview" false
+    (Sessy_ui.preview_enabled narrow_model);
+  check bool "narrow sync leaves preview empty" true
+    (Option.is_none synced_narrow_model.preview);
+  check int "hidden preview does not resolve" 0 (List.length !preview_requests);
+  let synced_wide_model = Sessy_shell.runtime_sync_preview handlers model in
+  check bool "wide picker renders preview" true (Sessy_ui.preview_enabled model);
+  check bool "wide sync loads preview" true
+    (Option.is_some synced_wide_model.preview);
+  check int "visible preview resolves once" 1 (List.length !preview_requests);
+  check string "visible preview resolves the selected session"
+    (Session_id.to_string current.id)
+    (!preview_requests |> List.hd |> Session_id.to_string)
 
 let test_shell_fs_and_config_loader () =
   let raw =
@@ -1567,6 +1698,10 @@ let () =
             test_cli_parse_dispatch_and_format;
           test_case "tui update behaviour" `Quick test_tui_update_behaviour;
           test_case "tui view rendering" `Quick test_tui_view_rendering;
+          test_case "runtime reload refreshes resolver state" `Quick
+            test_runtime_reload_refreshes_resolver_state;
+          test_case "runtime skips hidden preview resolution" `Quick
+            test_runtime_sync_preview_skips_hidden_pane;
         ] );
       ( "shell",
         [

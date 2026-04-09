@@ -52,6 +52,11 @@ let print_warnings warnings = warnings |> List.iter prerr_endline
 let print_output text = if String.equal text "" then () else print_endline text
 
 type launch_request = Last_request | Session_request of Session_id.t
+type runtime_handlers = Runtime.handlers
+
+type runtime_outcome = Runtime.outcome =
+  | Continue of Sessy_ui.model
+  | Finish of [ `Exit | `Launch of launch_cmd ]
 
 let config_error_message = function
   | File_not_found path -> Printf.sprintf "file not found: %s" path
@@ -636,10 +641,14 @@ let commands_need_sessions = function
   | Sessy_ui.Preview_session _ ->
       true
 
+let runtime_step = Runtime.step
+let runtime_sync_preview = Runtime.sync_preview
 let interactive_notice state = state |> combined_warnings |> warning_summary
 
-let interactive_reload_snapshot ~config_paths () =
+let interactive_reload_snapshot ~config_paths ~state_ref () =
   let state = load_runtime_state ~config_paths in
+
+  state_ref := state;
 
   Ok
     {
@@ -654,13 +663,16 @@ let run_picker ~config_paths ~cwd ~repo_root ~now =
     prerr_endline "interactive mode requires a TTY";
     1)
   else
-    let state = load_runtime_state ~config_paths in
+    let initial_state = load_runtime_state ~config_paths in
+    let state_ref = ref initial_state in
     let handlers : Runtime.handlers =
       {
         copy_to_clipboard;
         open_directory;
         open_session_directory =
           (fun session_id ->
+            let state = !state_ref in
+
             match
               resolve_session_directory ~config:state.config ~index:state.index
                 ~session_id ~cwd
@@ -669,20 +681,26 @@ let run_picker ~config_paths ~cwd ~repo_root ~now =
             | Error _ as error -> error);
         resolve_launch =
           (fun session_id launch_mode ->
+            let state = !state_ref in
+
             resolve_launch_cmd ~config:state.config ~index:state.index
               ~request:(Session_request session_id) ~active_profile:None
               ~launch_mode ~cwd ~repo_root ~now);
         resolve_preview =
           (fun session_id ->
+            let state = !state_ref in
+
             resolve_preview ~config:state.config ~index:state.index ~session_id
               ~cwd ~active_profile:None);
-        reload_snapshot = interactive_reload_snapshot ~config_paths;
+        reload_snapshot = interactive_reload_snapshot ~config_paths ~state_ref;
       }
     in
 
     match
-      Runtime.run ~index:state.index ~config:state.config ~cwd ~repo_root ~now
-        ~notice:(interactive_notice state) ~handlers
+      Runtime.run ~index:initial_state.index ~config:initial_state.config ~cwd
+        ~repo_root ~now
+        ~notice:(interactive_notice initial_state)
+        ~handlers
     with
     | `Exit -> 0
     | `Launch command -> command |> execute_launch

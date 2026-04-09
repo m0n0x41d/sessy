@@ -271,8 +271,7 @@ let update_profiles path base toml warnings =
                         match find_string profile_toml [ "extends" ] with
                         | Ok (Some value) -> (
                             match
-                              value
-                              |> String.lowercase_ascii
+                              value |> String.lowercase_ascii
                               |> parse_profile_extends
                             with
                             | Ok base_tool when Tool.equal base_tool tool ->
