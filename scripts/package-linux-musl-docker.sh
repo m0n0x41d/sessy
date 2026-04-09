@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$ROOT/dist"
 PLATFORM="${PLATFORM:-linux/amd64}"
-IMAGE="${IMAGE:-ocaml/opam:ubuntu-22.04-ocaml-5.4}"
+IMAGE="${IMAGE:-ocaml/opam:alpine-3.20-ocaml-5.4}"
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sessy-linux-dist.XXXXXX")"
 
 default_version() {
@@ -26,18 +26,16 @@ chmod 0777 "$STAGING_DIR"
 docker run \
   --rm \
   --platform "$PLATFORM" \
-  --env DEBIAN_FRONTEND=noninteractive \
   --env OPAMYES=1 \
   --volume "$ROOT:/src:ro" \
   --volume "$STAGING_DIR:/dist" \
   --workdir /src \
   "$IMAGE" \
-  bash -lc "
+  sh -lc "
     set -euo pipefail
     WORK_DIR=/home/opam/work
 
-    sudo apt-get update
-    sudo apt-get install --yes file musl-tools rsync
+    sudo apk add --no-cache file linux-headers rsync
 
     mkdir -p \"\$WORK_DIR\"
     rsync -a /src/ \"\$WORK_DIR\"/
