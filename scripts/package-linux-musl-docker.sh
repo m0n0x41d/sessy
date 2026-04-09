@@ -15,6 +15,7 @@ default_version() {
 VERSION="${1:-$(default_version)}"
 
 cleanup() {
+  chmod -R u+w "$STAGING_DIR" 2>/dev/null || true
   rm -rf "$STAGING_DIR"
 }
 
@@ -53,6 +54,7 @@ docker run \
     VERSION=\"$VERSION\" opam exec -- ./scripts/package-linux-musl.sh \"$VERSION\"
 
     cp -R dist/. /dist/
+    chmod -R a+rwX /dist
   "
 
 cp -R "$STAGING_DIR"/. "$DIST_DIR"/
