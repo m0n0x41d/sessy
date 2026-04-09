@@ -32,15 +32,16 @@ cp "$ROOT/_build/default/bin/main.exe" "$TARGET_PATH"
 strip --strip-unneeded "$TARGET_PATH" 2>/dev/null || true
 
 "$TARGET_PATH" list --json >/dev/null
-file "$TARGET_PATH"
+FILE_OUTPUT="$(file "$TARGET_PATH")"
+
+printf '%s\n' "$FILE_OUTPUT"
 
 LDD_OUTPUT="$(ldd "$TARGET_PATH" 2>&1 || true)"
 
 printf '%s\n' "$LDD_OUTPUT"
 
-if [[ "$LDD_OUTPUT" != *"not a dynamic executable"* ]] \
-  && [[ "$LDD_OUTPUT" != *"statically linked"* ]]; then
-  printf 'expected a static Linux binary, but ldd reported a dynamic executable\n' >&2
+if [[ "$FILE_OUTPUT" != *"statically linked"* ]]; then
+  printf 'expected a static Linux binary, but file reported a non-static executable\n' >&2
   exit 1
 fi
 
